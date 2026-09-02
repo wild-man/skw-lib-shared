@@ -1,0 +1,28 @@
+[package]
+name = "skw-lib-shared"
+version = { workspace = true }
+edition = { workspace = true }
+authors = ["Sergey Kutsenko <sergey.wild.man@gmail.com>"]
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_derive = { workspace = true }
+log = { workspace = true }
+tokio-postgres = { workspace = true }
+env_logger = { workspace = true }
+iggy = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+sqlx = { workspace = true }
+axum = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
