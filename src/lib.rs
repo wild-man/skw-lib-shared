@@ -15,11 +15,13 @@ mod jsonrpc;
 mod migrations;
 mod postgres;
 mod rabbitmq;
+mod redis;
 
 pub mod prelude;
 
 use crate::iggy::{Iggy, Loaded as IggyLoaded};
 use crate::rabbitmq::{Loaded as RabbitMqLoaded, RabbitMq};
+use crate::redis::{Loaded as RedisLoaded, Redis};
 use prelude::log::info;
 
 use crate::jsonrpc::ServiceHttpError;
@@ -37,6 +39,7 @@ pub struct AppContext {
     pub postgres: PostgresPools<PostgresLoaded>,
     pub iggy: Iggy<IggyLoaded>,
     pub rabbitmq: RabbitMq<RabbitMqLoaded>,
+    pub redis: Redis<RedisLoaded>,
     pub reqwest: ReqwestClient,
 }
 
@@ -52,6 +55,8 @@ pub enum AppError {
     Iggy(#[from] iggy::IggyError),
     #[error("RabbitMq error: {0}")]
     RabbitMq(#[from] rabbitmq::RabbitMqError),
+    #[error("Redis error: {0}")]
+    Redis(#[from] redis::RedisError),
     #[error("Reqwest error: {0}")]
     Reqwest(#[from] ReqwestError),
     #[error("Service error: {0}")]
@@ -117,6 +122,7 @@ fn init_by_env() -> AppContext {
     let db = PostgresPools::<PostgresLoaded>::new(&cfg);
     let iggy = Iggy::<IggyLoaded>::new(&cfg);
     let rabbitmq = RabbitMq::<RabbitMqLoaded>::new(&cfg);
+    let redis = Redis::<RedisLoaded>::new(&cfg);
 
     let app_context = AppContext {
         env,
@@ -125,6 +131,7 @@ fn init_by_env() -> AppContext {
         postgres: db,
         iggy,
         rabbitmq,
+        redis,
         reqwest: ReqwestClient::builder()
             .timeout(Duration::from_secs(5)) // @todo move to config
             .build()

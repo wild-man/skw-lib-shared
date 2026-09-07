@@ -21,6 +21,8 @@ pub mod consts {
 
     pub const RABBITMQ_URL_PATH: &str = "/rabbitmq/url";
 
+    pub const REDIS_URL_PATH: &str = "/redis/url";
+
     pub const IGGY_HEADER_SIGNATURE: &str = "signature";
     pub const IGGY_HEADER_HTTP_METHOD: &str = "http-method";
     pub const IGGY_HEADER_HTTP_PATH: &str = "http-path";
@@ -29,6 +31,10 @@ pub mod consts {
 
     // used when service had signature and response with error (BadRequest, NotFound, Forbidden, ...)
     pub const IGGY_HEADER_SERVICE_ERROR: &str = "err-response-code";
+
+    // request-timing trace headers, stamped by the service on the back-topic response message
+    pub const IGGY_HEADER_TS_SERVICE_RECEIVED: &str = "ts-service-received";
+    pub const IGGY_HEADER_TS_SERVICE_SENT: &str = "ts-service-sent";
 
     pub const JSON_ENV_OVERRIDES_PATH: &str = "/envOverrides";
 
@@ -96,6 +102,12 @@ pub mod postgres {
 
 pub mod rabbitmq {
     pub use crate::rabbitmq::{QueueConfig, RabbitMqError, RabbitMqPublisher, TaskOutcome, run_task_consumer};
+}
+
+pub mod redis {
+    pub use crate::redis::{Redis, RedisError};
+    pub use redis::aio::ConnectionManager;
+    pub use redis::{AsyncCommands, RedisResult};
 }
 
 pub mod sqlx {}

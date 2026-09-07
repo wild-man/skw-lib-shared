@@ -28,7 +28,9 @@ pub enum ServiceHttpError {
     #[error("BadRequest")]
     BadRequest,
     #[error("UnprocessableEntity")]
-    UnprocessableEntity, //@todo represent all passible http service errors (forbidden/not found/unprocessable entity/... )
+    UnprocessableEntity,
+    #[error("InternalServerError")]
+    InternalServerError,
 }
 
 #[derive(Debug)]
@@ -66,6 +68,7 @@ impl<REQ: Deserialize<'static>> JsonRpcErrorResponse<REQ> {
                 Forbidden => (StatusCode::FORBIDDEN, ERR_ANSWER).into_response(),
                 BadRequest => (StatusCode::BAD_REQUEST, ERR_ANSWER).into_response(),
                 UnprocessableEntity => (StatusCode::UNPROCESSABLE_ENTITY, ERR_ANSWER).into_response(),
+                InternalServerError => (StatusCode::INTERNAL_SERVER_ERROR, ERR_ANSWER).into_response(),
             },
             _ => (StatusCode::INTERNAL_SERVER_ERROR, ERR_ANSWER).into_response(),
         }
@@ -103,10 +106,13 @@ pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Seriali
         StatusCode::NOT_FOUND => return Err(NotFound.into()),
         StatusCode::BAD_REQUEST => return Err(BadRequest.into()),
         StatusCode::UNPROCESSABLE_ENTITY => return Err(UnprocessableEntity.into()),
+        StatusCode::INTERNAL_SERVER_ERROR => return Err(InternalServerError.into()),
         _ => {}
     }
 
     let resp_text = resp.text().await?;
-    debug!("response: {}", resp_text);
+
+    // debug!("response: {}", resp_text);
+
     Ok(resp_text)
 }

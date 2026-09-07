@@ -134,6 +134,8 @@ impl TryInto<TopicConfig> for &Value {
 
 pub mod rpc {
     use super::*;
+    use crate::prelude::consts::{IGGY_HEADER_TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_SENT};
+    use chrono::{SecondsFormat, Utc};
 
     #[derive(Debug, Clone)]
     pub struct RpcRequestMeta {
@@ -213,6 +215,8 @@ pub mod rpc {
             .build();
 
         while let Some(message) = iggy_consumer.next().await {
+            let ts_service_received = Utc::now();
+
             let received: ReceivedMessage = match message {
                 Ok(received) => received,
                 Err(error) => {
@@ -244,6 +248,17 @@ pub mod rpc {
                     Err(svc_err)
                 }
             };
+
+            let ts_service_sent = Utc::now();
+            headers.insert(
+                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_RECEIVED).map_err(|e| AppError::Custom(e.to_string()))?,
+                HeaderValue::from_str(&ts_service_received.to_rfc3339_opts(SecondsFormat::Nanos, true))
+                    .map_err(|e| AppError::Custom(e.to_string()))?,
+            );
+            headers.insert(
+                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_SENT).map_err(|e| AppError::Custom(e.to_string()))?,
+                HeaderValue::from_str(&ts_service_sent.to_rfc3339_opts(SecondsFormat::Nanos, true)).map_err(|e| AppError::Custom(e.to_string()))?,
+            );
 
             let payload_bytes = match rpc_payload {
                 Ok(resp) => Bytes::copy_from_slice(&serde_json::to_vec(&resp).map_err(|e| AppError::Custom(e.to_string()))?),
