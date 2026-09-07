@@ -2,7 +2,9 @@ pub use super::{APP, AppContext, AppError};
 pub use crate::RequestId;
 
 pub mod tools {
-    pub use crate::{skw_get_back_topic_name, skw_get_consumer_name, skw_get_stream_name, skw_get_stream_topic_name, skw_is_valid_name};
+    pub use crate::{
+        skw_get_back_topic_name, skw_get_consumer_name, skw_get_queue_name, skw_get_stream_name, skw_get_stream_topic_name, skw_is_valid_name,
+    };
     pub use bytes::Bytes;
 }
 
@@ -16,6 +18,8 @@ pub mod consts {
 
     pub const IGGY_STREAM_PREFIX: &str = "/iggy/streamPrefix";
     pub const IGGY_URL_PATH: &str = "/iggy/url";
+
+    pub const RABBITMQ_URL_PATH: &str = "/rabbitmq/url";
 
     pub const IGGY_HEADER_SIGNATURE: &str = "signature";
     pub const IGGY_HEADER_HTTP_METHOD: &str = "http-method";
@@ -88,6 +92,10 @@ pub mod iggy {
 
 pub mod postgres {
     pub use crate::postgres::{Connected as PostgresConnected, PostgresError, PostgresPools};
+}
+
+pub mod rabbitmq {
+    pub use crate::rabbitmq::{QueueConfig, RabbitMqError, RabbitMqPublisher, TaskOutcome, run_task_consumer};
 }
 
 pub mod sqlx {}

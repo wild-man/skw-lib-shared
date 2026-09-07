@@ -13,6 +13,7 @@ log = { workspace = true }
 tokio-postgres = { workspace = true }
 env_logger = { workspace = true }
 iggy = { workspace = true }
+lapin = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
