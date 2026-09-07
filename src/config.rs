@@ -132,7 +132,7 @@ impl Config<ConfigReady> {
             .as_ref()
             .and_then(|cfg| cfg.pointer(path))
             .and_then(|v| v.as_str())
-            .expect(&format!("invalid string config value: {}", path))
+            .unwrap_or_else(|| panic!("invalid config string value: {}", path))
     }
 
     pub fn expect_string(&self, path: &str) -> String {
@@ -140,7 +140,7 @@ impl Config<ConfigReady> {
             .as_ref()
             .and_then(|cfg| cfg.pointer(path))
             .and_then(|v| v.as_str())
-            .expect(&format!("invalid string config value: {}", path))
+            .unwrap_or_else(|| panic!("invalid config string value: {}", path))
             .to_string()
     }
 
@@ -149,14 +149,14 @@ impl Config<ConfigReady> {
             .as_ref()
             .and_then(|cfg| cfg.pointer(path))
             .and_then(|v| v.as_bool())
-            .expect(&format!("invalid bool config value: {}", path))
+            .unwrap_or_else(|| panic!("invalid bool config value: {}", path))
     }
 
     pub fn expect_value_cloned(&self, path: &str) -> Value {
         self.config
             .as_ref()
             .and_then(|cfg| cfg.pointer(path))
-            .expect(&format!("invalid config value: {}", path))
+            .unwrap_or_else(|| panic!("invalid config value: {}", path))
             .clone()
     }
 
@@ -165,7 +165,7 @@ impl Config<ConfigReady> {
             .as_ref()
             .and_then(|cfg| cfg.pointer(path))
             .and_then(|v| v.as_u64())
-            .expect(&format!("invalid u64 config value: {}", path))
+            .unwrap_or_else(|| panic!("invalid u64 config value: {}", path))
     }
 
     pub fn expect_u32(&self, path: &str) -> u32 {
@@ -173,6 +173,6 @@ impl Config<ConfigReady> {
             .as_ref()
             .and_then(|cfg| cfg.pointer(path))
             .and_then(|v| v.as_u64().map(|x| x as u32))
-            .expect(&format!("invalid u32 config value: {}", path))
+            .unwrap_or_else(|| panic!("invalid u32 config value: {}", path))
     }
 }

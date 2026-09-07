@@ -50,7 +50,7 @@ impl<S: PostgresStates> PostgresPools<S> {
         }
 
         if cfg.get(SLAVE_CONFIG_PATH).is_some() {
-            slave_url = Some(cfg.expect_string(&format!("{}/url", MASTER_CONFIG_PATH)));
+            slave_url = Some(cfg.expect_string(&format!("{}/url", SLAVE_CONFIG_PATH)));
         }
 
         PostgresPools::<Loaded> {

@@ -55,10 +55,7 @@ pub struct JsonRpcErrorResponse<REQ: Deserialize<'static>> {
 
 impl<REQ: Deserialize<'static>> JsonRpcErrorResponse<REQ> {
     pub fn new(request: REQ, err: AppError) -> Self {
-        Self {
-            request: request,
-            err: err,
-        }
+        Self { request, err }
     }
 
     pub fn into_response(self) -> AxumResponse {

@@ -49,7 +49,7 @@ pub struct Iggy<S: IggyStates> {
 }
 
 impl<S: IggyStates> Iggy<S> {
-    pub fn new(cfg: &Config<ConfigReady>) -> Iggy<Loaded> {
+    pub fn new(_cfg: &Config<ConfigReady>) -> Iggy<Loaded> {
         Iggy::<Loaded> {
             client: None,
             _state: PhantomData,
@@ -184,13 +184,7 @@ pub mod rpc {
         );
 
         let pool_interval = match pool_interval {
-            Some(i) => IggyDuration::from_str(i).map_err(|e| {
-                AppError::Custom(format!(
-                    "invalid pool interval: {}; error:{}",
-                    i,
-                    e.to_string()
-                ))
-            })?,
+            Some(i) => IggyDuration::from_str(i).map_err(|e| AppError::Custom(format!("invalid pool interval: {}; error:{}", i, e)))?,
             None => IggyDuration::from_str("1ms").map_err(|e| AppError::Custom(e.to_string()))?,
         };
 

@@ -98,20 +98,22 @@ fn init_by_env() -> AppContext {
     info!("Loading configuration for: '{}' environment", env);
     let cfg = Config::new(&env).load().override_values_from_env();
 
-    let service_name = skw_is_valid_name(cfg.expect_str(SERVICE_NAME_PATH)).expect(&format!(
-        "invalid service name at {}; allowed characters is [A-z0-9_-.]",
-        SERVICE_NAME_PATH
-    ));
+    let service_name = skw_is_valid_name(cfg.expect_str(SERVICE_NAME_PATH)).unwrap_or_else(|| {
+        panic!(
+            "invalid service name at {}; allowed characters is [A-z0-9_-.]",
+            SERVICE_NAME_PATH
+        )
+    });
 
     let db = PostgresPools::<PostgresLoaded>::new(&cfg);
     let iggy = Iggy::<IggyLoaded>::new(&cfg);
 
     let app_context = AppContext {
-        env: env,
+        env,
         service_name,
         config: cfg,
         postgres: db,
-        iggy: iggy,
+        iggy,
         reqwest: ReqwestClient::builder()
             .timeout(Duration::from_secs(5)) // @todo move to config
             .build()
