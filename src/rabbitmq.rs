@@ -127,10 +127,9 @@ async fn declare_queue(channel: &Channel, queue: &QueueConfig) -> Result<(), Rab
 }
 
 /// Runs a manual-ack consumer loop against `queue`, blocking the caller for the
-/// lifetime of the process (same convention as `iggy::rpc::run_service_consumer`).
 /// A message that fails to deserialize is nack'd with `requeue`; otherwise the
 /// delivery is ack'd/nack'd per `handler`'s returned `TaskOutcome`.
-pub async fn run_task_consumer<Task, H, Fut>(queue: QueueConfig, handler: H, requeue: bool) -> Result<(), AppError>
+pub async fn run_task_consumer<Task, H, Fut>(queue: QueueConfig, handler: H) -> Result<(), AppError>
 where
     Task: DeserializeOwned,
     H: Fn(Task) -> Fut,
@@ -172,11 +171,11 @@ where
         let task: Task = match serde_json::from_slice(&delivery.data) {
             Ok(task) => task,
             Err(e) => {
-                error!("bad task payload, requeue={requeue}: {e}");
+                error!("bad task payload: {e}");
                 if let Err(e) = delivery
                     .acker
                     .nack(BasicNackOptions {
-                        requeue,
+                        requeue: false, // if message can't be deserialized force to not requeue
                         ..Default::default()
                     })
                     .await
@@ -197,7 +196,7 @@ where
                 if let Err(e) = delivery
                     .acker
                     .nack(BasicNackOptions {
-                        requeue,
+                        requeue: requeue,
                         ..Default::default()
                     })
                     .await

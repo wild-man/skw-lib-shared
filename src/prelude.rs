@@ -20,6 +20,7 @@ pub mod consts {
     pub const IGGY_URL_PATH: &str = "/iggy/url";
 
     pub const RABBITMQ_URL_PATH: &str = "/rabbitmq/url";
+    pub const RABBITMQ_QUEUES_PATH: &str = "/rabbitmq/queues";
 
     pub const REDIS_URL_PATH: &str = "/redis/url";
 
