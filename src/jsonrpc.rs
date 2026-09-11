@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use crate::prelude::axum::{AxumJson, AxumResponse, IntoAxumResponse, StatusCode};
-use crate::prelude::{chrono::*, log::debug, serde::*, strum::EnumString};
+use crate::prelude::{chrono::*, serde::*, strum::EnumString};
 use crate::{APP, AppError};
 use reqwest::IntoUrl;
 use thiserror::Error;
@@ -9,8 +9,6 @@ use thiserror::Error;
 const ERR_ANSWER: AxumJson<&str> = AxumJson("{}");
 
 /// запрос который приходит на gate в http
-// @todo попробовать добавитиь сюда дополнительное обязательно поле ts: DateTime<Utc> c милисекундами или нано секундами
-// что бы любой сформированный пользовательский запрос имел уникальную signature
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct JsonRpcGateHttpRequest {

@@ -13,8 +13,16 @@ pub mod chrono {
 }
 
 pub mod consts {
+    use std::time::Duration;
+
+    //IMPORTANT! this const used in STREAM consumers to not handle late messages
+    pub const BACK_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
+
     pub const DEFAULT_ENVIRONMENT: &str = "dev";
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    pub const AUTH_SREVICE_URL: &str = "/service/authServiceUrl";
+    pub const SERVICE_WORKERS: &str = "/service/workers";
 
     pub const IGGY_STREAM_PREFIX: &str = "/iggy/streamPrefix";
     pub const IGGY_URL_PATH: &str = "/iggy/url";
@@ -29,6 +37,10 @@ pub mod consts {
     pub const IGGY_HEADER_HTTP_PATH: &str = "http-path";
 
     pub const IGGY_HEADER_API_KEY: &str = "api-key";
+
+    // set by a backend service on an unsolicited (not request-triggered) back-topic
+    // message to address it at a specific gates/ws connection
+    pub const IGGY_HEADER_TARGET_WS_CONNECTION_ID: &str = "target-ws-connection-id";
 
     // used when service had signature and response with error (BadRequest, NotFound, Forbidden, ...)
     pub const IGGY_HEADER_SERVICE_ERROR: &str = "err-response-code";

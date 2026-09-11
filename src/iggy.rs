@@ -134,8 +134,9 @@ impl TryInto<TopicConfig> for &Value {
 
 pub mod rpc {
     use super::*;
-    use crate::prelude::consts::{IGGY_HEADER_TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_SENT};
+    use crate::prelude::consts::{BACK_MESSAGE_TIMEOUT, IGGY_HEADER_TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_SENT};
     use chrono::{SecondsFormat, Utc};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Debug, Clone)]
     pub struct RpcRequestMeta {
@@ -224,6 +225,24 @@ pub mod rpc {
                     continue;
                 }
             };
+
+            // messages older than BACK_MESSAGE_TIMEOUT have already caused the
+            // originating gate to give up waiting on this signature (see
+            // gates/api's await_service_response / gates/ws's timeout
+            // watchdog) — skip the handler entirely rather than doing work
+            // (and publishing a reply) that nobody is listening for anymore.
+            let message_sent_at = UNIX_EPOCH + std::time::Duration::from_micros(received.message.header.timestamp);
+            let message_age = SystemTime::now()
+                .duration_since(message_sent_at)
+                .unwrap_or_default();
+
+            if message_age > BACK_MESSAGE_TIMEOUT {
+                warn!(
+                    "skipping stale message (age: {:?} > {:?}); offset: {}, partition: {}",
+                    message_age, BACK_MESSAGE_TIMEOUT, received.current_offset, received.partition_id
+                );
+                continue;
+            }
 
             let req: Req = match received.try_into() {
                 Ok(req) => req,
