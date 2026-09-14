@@ -33,13 +33,13 @@ pub enum ServiceHttpError {
 
 #[derive(Debug)]
 pub struct JsonRpcResponse<REQ: Deserialize<'static>, RESP: Serialize> {
-    request: REQ,
+    _request: REQ,
     response: RESP,
 }
 
 impl<REQ: Deserialize<'static>, RESP: Serialize> JsonRpcResponse<REQ, RESP> {
-    pub fn new(request: REQ, response: RESP) -> Self {
-        Self { request, response }
+    pub fn new(_request: REQ, response: RESP) -> Self {
+        Self { _request, response }
     }
 
     pub fn into_response(self) -> AxumResponse {
@@ -49,13 +49,13 @@ impl<REQ: Deserialize<'static>, RESP: Serialize> JsonRpcResponse<REQ, RESP> {
 
 #[derive(Debug)]
 pub struct JsonRpcErrorResponse<REQ: Deserialize<'static>> {
-    request: REQ,
+    _request: REQ, //@todo save _request for tracing/analitics
     err: AppError,
 }
 
 impl<REQ: Deserialize<'static>> JsonRpcErrorResponse<REQ> {
-    pub fn new(request: REQ, err: AppError) -> Self {
-        Self { request, err }
+    pub fn new(_request: REQ, err: AppError) -> Self {
+        Self { _request, err } //@todo save _request for tracing/analitics
     }
 
     pub fn into_response(self) -> AxumResponse {
