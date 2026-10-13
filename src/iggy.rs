@@ -305,10 +305,7 @@ pub mod rpc {
             let meta = req.meta();
             let rpc_payload = match req.into_rpc_method() {
                 Ok(rpc_method) => handler(rpc_method, meta).await,
-                Err(svc_err) => {
-                    error!("{}", svc_err);
-                    Err(svc_err)
-                }
+                Err(svc_err) => Err(svc_err),
             };
 
             let ts_service_sent = Utc::now();
@@ -325,9 +322,11 @@ pub mod rpc {
             let payload_bytes = match rpc_payload {
                 Ok(resp) => Bytes::copy_from_slice(&serde_json::to_vec(&resp).map_err(|e| AppError::Custom(e.to_string()))?),
                 Err(svc_err) => {
+                    // full error stays in the service log; only the client-facing code goes on the bus
+                    error!("{}", svc_err);
                     headers.insert(
                         HeaderKey::from_str(IGGY_HEADER_SERVICE_ERROR).map_err(|e| AppError::Custom(e.to_string()))?,
-                        HeaderValue::from_str(&svc_err.to_string()).map_err(|e| AppError::Custom(e.to_string()))?,
+                        HeaderValue::from_str(&svc_err.service_error().to_string()).map_err(|e| AppError::Custom(e.to_string()))?,
                     );
                     Bytes::copy_from_slice(b"{}")
                 }
@@ -345,6 +344,22 @@ pub mod rpc {
         }
 
         Ok(())
+    }
+
+    pub fn get_config_topic_types() -> Result<Vec<TopicType>, AppError> {
+        APP.config
+            .get(SERVICE_TOPIC_TYPES_PATH)
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                AppError::Custom(format!(
+                    "invalid config array value: {}",
+                    SERVICE_TOPIC_TYPES_PATH
+                ))
+            })?
+            .iter()
+            .unique()
+            .map(TopicType::try_from)
+            .collect::<Result<Vec<_>, _>>()
     }
 
     /// Runs one `run_service_consumer` task per topic type listed in `/service/topicTypes` config,
@@ -365,20 +380,7 @@ pub mod rpc {
         Fut: Future<Output = Result<Resp, AppError>> + Send,
         Resp: Serialize + Send,
     {
-        let topic_types = APP
-            .config
-            .get(SERVICE_TOPIC_TYPES_PATH)
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                AppError::Custom(format!(
-                    "invalid config array value: {}",
-                    SERVICE_TOPIC_TYPES_PATH
-                ))
-            })?
-            .iter()
-            .unique()
-            .map(TopicType::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
+        let topic_types = get_config_topic_types()?;
 
         validate_rpc_methods_by_topics::<Req::RpcMethod>(&topic_types);
 

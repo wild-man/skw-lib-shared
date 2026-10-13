@@ -31,6 +31,20 @@ pub enum ServiceHttpError {
     InternalServerError,
 }
 
+impl ServiceHttpError {
+    /// HTTP status of this error, shared by every gate/service reporting it to clients
+    pub fn status_code(&self) -> StatusCode {
+        use ServiceHttpError::*;
+        match self {
+            NotFound => StatusCode::NOT_FOUND,
+            Forbidden => StatusCode::FORBIDDEN,
+            BadRequest => StatusCode::BAD_REQUEST,
+            UnprocessableEntity => StatusCode::UNPROCESSABLE_ENTITY,
+            InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct JsonRpcResponse<REQ: Deserialize<'static>, RESP: Serialize> {
     _request: REQ,
@@ -59,21 +73,14 @@ impl<REQ: Deserialize<'static>> JsonRpcErrorResponse<REQ> {
     }
 
     pub fn into_response(self) -> AxumResponse {
-        use ServiceHttpError::*;
-        match self.err {
-            AppError::Service(serr) => match serr {
-                NotFound => (StatusCode::NOT_FOUND, ERR_ANSWER).into_response(),
-                Forbidden => (StatusCode::FORBIDDEN, ERR_ANSWER).into_response(),
-                BadRequest => (StatusCode::BAD_REQUEST, ERR_ANSWER).into_response(),
-                UnprocessableEntity => (StatusCode::UNPROCESSABLE_ENTITY, ERR_ANSWER).into_response(),
-                InternalServerError => (StatusCode::INTERNAL_SERVER_ERROR, ERR_ANSWER).into_response(),
-            },
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, ERR_ANSWER).into_response(),
-        }
+        (self.err.service_error().status_code(), ERR_ANSWER).into_response()
     }
 }
 
-pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Serialize + for<'a> Deserialize<'a> + Into<&'static str>>(url: S, req: T) -> Result<String, AppError> {
+pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Serialize + for<'a> Deserialize<'a> + Into<&'static str>>(
+    url: S,
+    req: T,
+) -> Result<String, AppError> {
     use ServiceHttpError::*;
 
     let req_value: Value = serde_json::to_value(&req).map_err(|e| AppError::Custom(e.to_string()))?;

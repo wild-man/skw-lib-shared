@@ -4,6 +4,7 @@ pub use crate::RequestId;
 pub mod tools {
     pub use crate::{
         skw_get_back_topic_name, skw_get_consumer_name, skw_get_queue_name, skw_get_stream_name, skw_get_stream_topic_name, skw_is_valid_name,
+        skw_random_signature,
     };
     pub use bytes::Bytes;
     pub use itertools::Itertools;
@@ -39,6 +40,10 @@ pub mod consts {
 
     pub const IGGY_HEADER_API_KEY: &str = "api-key";
 
+    // client → api-gate HTTP headers of signed requests
+    pub const HTTP_HEADER_API_KEY: &str = "API-KEY";
+    pub const HTTP_HEADER_PAYLOAD_SIGNATURE: &str = "PAYLOAD-SIGNATURE";
+
     // set by a backend service on an unsolicited (not request-triggered) back-topic
     // message to address it at a specific gates/ws connection
     pub const IGGY_HEADER_TARGET_WS_CONNECTION_ID: &str = "target-ws-connection-id";
@@ -51,6 +56,10 @@ pub mod consts {
     pub const IGGY_HEADER_TS_SERVICE_SENT: &str = "ts-service-sent";
 
     pub const JSON_ENV_OVERRIDES_PATH: &str = "/envOverrides";
+
+    // optional absolute/relative path to the config file; overrides `./{ENV}.json` lookup
+    // (CWD is still used as the base dir for migrations and relative paths)
+    pub const CONFIG_FILE_ENV: &str = "SKW_CONFIG_FILE";
 
     pub const SERVICE_BIND_ADDRESS: &str = "/service/bindAddress";
     pub const SERVICE_NAME_PATH: &str = "/service/name";
@@ -106,7 +115,9 @@ pub mod log {
 }
 
 pub mod iggy {
-    pub use crate::iggy::rpc::{RpcMessageTrait, RpcRequestMeta, run_service_consumer, run_service_consumers_all_topic_types};
+    pub use crate::iggy::rpc::{
+        RpcMessageTrait, RpcRequestMeta, get_config_topic_types, run_service_consumer, run_service_consumers_all_topic_types,
+    };
     pub use crate::iggy::{TopicConfig, TopicType};
     pub use iggy::prelude::*;
 }

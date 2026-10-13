@@ -1,4 +1,4 @@
-use crate::prelude::consts::JSON_ENV_OVERRIDES_PATH;
+use crate::prelude::consts::{CONFIG_FILE_ENV, JSON_ENV_OVERRIDES_PATH};
 use crate::prelude::log::warn;
 use log::info;
 use serde_json::Value;
@@ -42,7 +42,7 @@ impl Config<ConfigNew> {
             .canonicalize()
             .expect("invalid working directory");
 
-        let config_path = format!("{}/{}.json", cdir.display(), self.env);
+        let config_path = env::var(CONFIG_FILE_ENV).unwrap_or_else(|_| format!("{}/{}.json", cdir.display(), self.env));
         info!("Loading configuration file: {}", config_path);
 
         let cfg = std::fs::read_to_string(config_path)

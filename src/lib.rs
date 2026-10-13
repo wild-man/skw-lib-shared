@@ -1,8 +1,10 @@
 #[allow(unused_imports)]
 use env_logger::{Builder, Target};
 
+use base64::prelude::*;
 use config::{Config, ConfigReady};
 use postgres::{Loaded as PostgresLoaded, PostgresPools};
+use rand::RngCore;
 use reqwest::{Client as ReqwestClient, Error as ReqwestError};
 use sqlx::migrate::MigrateError;
 use std::sync::LazyLock;
@@ -65,6 +67,17 @@ pub enum AppError {
     Serde(#[from] serde_json::Error),
 }
 
+impl AppError {
+    /// Client-facing error code; internal failures (db, redis, iggy, ...) collapse into
+    /// InternalServerError so their details never leak to the client.
+    pub fn service_error(&self) -> ServiceHttpError {
+        match self {
+            AppError::Service(e) => e.clone(),
+            _ => ServiceHttpError::InternalServerError,
+        }
+    }
+}
+
 pub fn skw_get_stream_name() -> String {
     format!("{}-{}", APP.config.expect_str(IGGY_STREAM_PREFIX), VERSION)
 }
@@ -103,6 +116,15 @@ pub fn skw_is_valid_name(name: &str) -> Option<String> {
     }
 
     Some(name.into())
+}
+
+/// Correlation id for requests that carry no client signature (public/open topics):
+/// 64 random bytes in base64, i.e. shaped like an ed25519 signature, so gates and
+/// services handle signed and unsigned requests' ids the same way.
+pub fn skw_random_signature() -> String {
+    let mut rand_signature_bytes = [0u8; 64];
+    rand::thread_rng().fill_bytes(&mut rand_signature_bytes);
+    BASE64_STANDARD.encode(rand_signature_bytes)
 }
 
 fn init_by_env() -> AppContext {
