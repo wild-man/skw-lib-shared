@@ -6,10 +6,11 @@ pub mod tools {
         skw_get_back_topic_name, skw_get_consumer_name, skw_get_queue_name, skw_get_stream_name, skw_get_stream_topic_name, skw_is_valid_name,
     };
     pub use bytes::Bytes;
+    pub use itertools::Itertools;
 }
 
 pub mod chrono {
-    pub use chrono::{DateTime, Utc};
+    pub use chrono::{DateTime, TimeDelta, Timelike, Utc};
 }
 
 pub mod consts {
@@ -53,6 +54,7 @@ pub mod consts {
 
     pub const SERVICE_BIND_ADDRESS: &str = "/service/bindAddress";
     pub const SERVICE_NAME_PATH: &str = "/service/name";
+    pub const SERVICE_TOPIC_TYPES_PATH: &str = "/service/topicTypes";
 
     pub const GATE_TOPICS_MAP: &str = "/topicsMap";
 
@@ -71,8 +73,8 @@ pub mod base64 {
 }
 
 pub mod strum {
-    pub use strum::Display;
-    pub use strum_macros::{EnumString, IntoStaticStr};
+    pub use strum::{Display, IntoEnumIterator};
+    pub use strum_macros::{EnumIter, EnumProperty, EnumString, IntoStaticStr};
 }
 pub mod uuid {
     pub use uuid::Uuid;
@@ -104,8 +106,8 @@ pub mod log {
 }
 
 pub mod iggy {
-    pub use crate::iggy::TopicConfig;
-    pub use crate::iggy::rpc::{RpcMessageTrait, RpcRequestMeta, run_service_consumer};
+    pub use crate::iggy::rpc::{RpcMessageTrait, RpcRequestMeta, run_service_consumer, run_service_consumers_all_topic_types};
+    pub use crate::iggy::{TopicConfig, TopicType};
     pub use iggy::prelude::*;
 }
 

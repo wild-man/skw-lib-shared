@@ -196,7 +196,7 @@ where
                 if let Err(e) = delivery
                     .acker
                     .nack(BasicNackOptions {
-                        requeue: requeue,
+                        requeue,
                         ..Default::default()
                     })
                     .await

@@ -73,13 +73,10 @@ impl<REQ: Deserialize<'static>> JsonRpcErrorResponse<REQ> {
     }
 }
 
-pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Serialize + for<'a> Deserialize<'a> + Into<&'static str>>(
-    url: S,
-    req: T,
-) -> Result<String, AppError> {
+pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Serialize + for<'a> Deserialize<'a> + Into<&'static str>>(url: S, req: T) -> Result<String, AppError> {
     use ServiceHttpError::*;
 
-    let req_value: Value = serde_json::to_value(&req).unwrap(); // unwrap is safe
+    let req_value: Value = serde_json::to_value(&req).map_err(|e| AppError::Custom(e.to_string()))?;
     let method: &'static str = req.into(); // strum return method name
 
     let body = json!({

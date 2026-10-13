@@ -1,17 +1,17 @@
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::{collections::BTreeMap, fmt::Display, future::Future, str::FromStr};
-
 use bytes::Bytes;
 use futures_util::StreamExt;
 use iggy::prelude::*;
+use itertools::Itertools;
 use serde::Serialize;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::{collections::BTreeMap, fmt::Display, future::Future, str::FromStr};
+use strum::{Display, EnumProperty, EnumString, IntoEnumIterator};
 
 #[allow(unused_imports)]
 use crate::prelude::log::{error, info, warn};
 use crate::{
     APP, AppError,
-    jsonrpc::ServiceHttpError,
     prelude::consts::{IGGY_HEADER_SERVICE_ERROR, IGGY_HEADER_SIGNATURE, IGGY_URL_PATH},
     skw_get_back_topic_name, skw_get_consumer_name, skw_get_stream_name, skw_get_stream_topic_name,
 };
@@ -31,6 +31,28 @@ pub enum IggyError {
     Custom(String),
     #[error("iggy::Error: {0}")]
     Iggy(#[from] iggy::prelude::IggyError),
+}
+
+#[derive(Clone, Debug, Display, EnumString, PartialEq, Eq)]
+#[strum(ascii_case_insensitive)]
+pub enum TopicType {
+    #[strum(serialize = "public", to_string = "public")]
+    Public,
+    #[strum(serialize = "open", to_string = "open")]
+    Open,
+    #[strum(serialize = "signed", to_string = "signed")]
+    Signed,
+}
+
+impl TryFrom<&Value> for TopicType {
+    type Error = AppError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let s = value
+            .as_str()
+            .ok_or_else(|| AppError::Custom(format!("topic type must be a string, got: {value}")))?;
+        s.parse()
+            .map_err(|_| AppError::Custom(format!("unknown topic type: {s}")))
+    }
 }
 
 pub trait IggyStates {}
@@ -78,7 +100,7 @@ impl Iggy<Connected> {
 }
 
 pub struct TopicConfig {
-    pub custom_name: Option<String>,
+    pub topic_types: Vec<TopicType>,
     pub partitions_count: u32,
     pub compression_algorithm: CompressionAlgorithm,
     pub message_expiry: IggyExpiry,
@@ -93,11 +115,11 @@ impl TryInto<TopicConfig> for &Value {
             .as_object()
             .ok_or_else(|| AppError::Custom("invalid topic config".into()))?;
 
-        let custom_name = obj
-            .get("customName")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
+        // let custom_name = obj
+        //     .get("customName")
+        //     .and_then(Value::as_str)
+        //     .filter(|s| !s.is_empty())
+        //     .map(|s| s.to_string());
 
         let partitions_count = obj
             .get("partitionsCount")
@@ -122,8 +144,22 @@ impl TryInto<TopicConfig> for &Value {
             .unwrap_or_default()
             .into();
 
+        let mut topic_types = vec![];
+        for t in obj
+            .get("topicTypes")
+            .and_then(Value::as_array)
+            .expect("invalid topic types")
+        {
+            let topic_type: TopicType = t.try_into()?;
+            topic_types.push(topic_type);
+        }
+
+        if topic_types.is_empty() {
+            return Err(AppError::Custom("empty topics config".into()));
+        }
+
         Ok(TopicConfig {
-            custom_name,
+            topic_types,
             partitions_count,
             compression_algorithm,
             message_expiry,
@@ -134,9 +170,11 @@ impl TryInto<TopicConfig> for &Value {
 
 pub mod rpc {
     use super::*;
+    use crate::prelude::consts::SERVICE_TOPIC_TYPES_PATH;
     use crate::prelude::consts::{BACK_MESSAGE_TIMEOUT, IGGY_HEADER_TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_SENT};
     use chrono::{SecondsFormat, Utc};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::task::JoinSet;
 
     #[derive(Debug, Clone)]
     pub struct RpcRequestMeta {
@@ -152,7 +190,7 @@ pub mod rpc {
         fn http_method(&self) -> &str;
         fn http_path(&self) -> &str;
         fn api_key(&self) -> Option<&str>;
-        fn into_rpc_method(self) -> Result<Self::RpcMethod, ServiceHttpError>;
+        fn into_rpc_method(self) -> Result<Self::RpcMethod, AppError>;
 
         fn meta(&self) -> RpcRequestMeta {
             RpcRequestMeta {
@@ -164,17 +202,22 @@ pub mod rpc {
         }
     }
 
-    pub async fn run_service_consumer<Req, H, Fut, Resp>(handler: H, pool_interval: Option<&str>, batch_size: Option<u32>) -> Result<(), AppError>
+    pub async fn run_service_consumer<Req, H, Fut, Resp>(
+        handler: H,
+        pool_interval: Option<&str>,
+        batch_size: Option<u32>,
+        topic_type: TopicType,
+    ) -> Result<(), AppError>
     where
         ReceivedMessage: TryInto<Req>,
         <ReceivedMessage as TryInto<Req>>::Error: Display,
         Req: RpcMessageTrait,
         H: Fn(Req::RpcMethod, RpcRequestMeta) -> Fut,
-        Fut: Future<Output = Result<Resp, ServiceHttpError>>,
+        Fut: Future<Output = Result<Resp, AppError>>,
         Resp: Serialize,
     {
         let stream = skw_get_stream_name();
-        let topic = skw_get_stream_topic_name();
+        let topic = skw_get_stream_topic_name(topic_type);
         let back_topic = skw_get_back_topic_name();
         let consumer = skw_get_consumer_name(&topic);
 
@@ -302,5 +345,103 @@ pub mod rpc {
         }
 
         Ok(())
+    }
+
+    /// Runs one `run_service_consumer` task per topic type listed in `/service/topicTypes` config,
+    /// all sharing the same handler. Keeps running while at least one consumer is alive and
+    /// returns an error only after every consumer has stopped.
+    pub async fn run_service_consumers_all_topic_types<Req, H, Fut, Resp>(
+        handler: H,
+        pool_interval: Option<&str>,
+        batch_size: Option<u32>,
+    ) -> Result<(), AppError>
+    where
+        ReceivedMessage: TryInto<Req>,
+        <ReceivedMessage as TryInto<Req>>::Error: Display,
+        Req: RpcMessageTrait + Send + 'static,
+        Req::RpcMethod: Send + EnumProperty + IntoEnumIterator,
+        for<'a> &'a Req::RpcMethod: Into<&'static str>,
+        H: Fn(Req::RpcMethod, RpcRequestMeta) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<Resp, AppError>> + Send,
+        Resp: Serialize + Send,
+    {
+        let topic_types = APP
+            .config
+            .get(SERVICE_TOPIC_TYPES_PATH)
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                AppError::Custom(format!(
+                    "invalid config array value: {}",
+                    SERVICE_TOPIC_TYPES_PATH
+                ))
+            })?
+            .iter()
+            .unique()
+            .map(TopicType::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        validate_rpc_methods_by_topics::<Req::RpcMethod>(&topic_types);
+
+        let pool_interval = pool_interval.map(str::to_string);
+
+        let mut consumers = JoinSet::new();
+        for topic_type in topic_types {
+            let handler = handler.clone();
+            let pool_interval = pool_interval.clone();
+
+            consumers.spawn(async move {
+                let result = run_service_consumer::<Req, _, _, _>(
+                    handler,
+                    pool_interval.as_deref(),
+                    batch_size,
+                    topic_type.clone(),
+                )
+                .await;
+                (topic_type, result)
+            });
+        }
+
+        while let Some(joined) = consumers.join_next().await {
+            match joined {
+                Ok((topic_type, Ok(()))) => warn!(
+                    "consumer for topic type {topic_type} stopped; {} still running",
+                    consumers.len()
+                ),
+                Ok((topic_type, Err(e))) => error!(
+                    "consumer for topic type {topic_type} failed: {e}; {} still running",
+                    consumers.len()
+                ),
+                Err(e) => error!(
+                    "consumer task panicked or was cancelled: {e}; {} still running",
+                    consumers.len()
+                ),
+            }
+        }
+
+        Err(AppError::Custom("all topic consumers stopped".into()))
+    }
+}
+
+fn validate_rpc_methods_by_topics<M>(topic_types: &[TopicType])
+where
+    M: IntoEnumIterator + EnumProperty,
+    for<'a> &'a M: Into<&'static str>,
+{
+    if topic_types.is_empty() {
+        panic!("Error: empty topic types");
+    }
+
+    for m in M::iter() {
+        let name: &'static str = (&m).into();
+        let signed: Option<TopicType> = m.get_str("topic").map(|tt| {
+            tt.parse()
+                .unwrap_or_else(|_| panic!("Invalid topic type: {tt}"))
+        });
+
+        if let Some(TopicType::Signed) = signed
+            && !topic_types.iter().all(|t| t == &TopicType::Signed)
+        {
+            panic!("Error: signed method: {name} can be used in unsigned topics");
+        }
     }
 }

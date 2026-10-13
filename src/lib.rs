@@ -19,7 +19,7 @@ mod redis;
 
 pub mod prelude;
 
-use crate::iggy::{Iggy, Loaded as IggyLoaded};
+use crate::iggy::{Iggy, Loaded as IggyLoaded, TopicType};
 use crate::rabbitmq::{Loaded as RabbitMqLoaded, RabbitMq};
 use crate::redis::{Loaded as RedisLoaded, Redis};
 use prelude::log::info;
@@ -81,7 +81,7 @@ pub fn skw_get_queue_name(base: &str) -> String {
     format!("{}-{}", base, VERSION)
 }
 
-pub fn skw_get_stream_topic_name() -> String {
+pub fn skw_get_stream_topic_name(topic_type: TopicType) -> String {
     let srv = APP
         .config
         .expect_str(SERVICE_NAME_PATH)
@@ -90,7 +90,7 @@ pub fn skw_get_stream_topic_name() -> String {
     let srv = srv.strip_prefix("skw-").unwrap_or(&srv);
     let srv = srv.strip_suffix("-service").unwrap_or(srv);
 
-    format!("{}-{}", srv, VERSION)
+    format!("{}-{}-{}", srv, topic_type, VERSION)
 }
 
 pub fn skw_is_valid_name(name: &str) -> Option<String> {
