@@ -26,7 +26,7 @@ use crate::config::{Config, ConfigReady};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum IggyError {
+pub enum SkwIggyError {
     #[error("Other error: {0}")]
     Custom(String),
     #[error("iggy::Error: {0}")]
@@ -35,7 +35,7 @@ pub enum IggyError {
 
 #[derive(Clone, Debug, Display, EnumString, PartialEq, Eq)]
 #[strum(ascii_case_insensitive)]
-pub enum TopicType {
+pub enum SkwTopicType {
     #[strum(serialize = "public", to_string = "public")]
     Public,
     #[strum(serialize = "open", to_string = "open")]
@@ -44,14 +44,14 @@ pub enum TopicType {
     Signed,
 }
 
-impl TryFrom<&Value> for TopicType {
+impl TryFrom<&Value> for SkwTopicType {
     type Error = AppError;
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         let s = value
             .as_str()
-            .ok_or_else(|| AppError::Custom(format!("topic type must be a string, got: {value}")))?;
+            .ok_or_else(|| format!("topic type must be a string, got: {value}"))?;
         s.parse()
-            .map_err(|_| AppError::Custom(format!("unknown topic type: {s}")))
+            .map_err(|_| format!("unknown topic type: {s}").into())
     }
 }
 
@@ -100,7 +100,7 @@ impl Iggy<Connected> {
 }
 
 pub struct TopicConfig {
-    pub topic_types: Vec<TopicType>,
+    pub topic_types: Vec<SkwTopicType>,
     pub partitions_count: u32,
     pub compression_algorithm: CompressionAlgorithm,
     pub message_expiry: IggyExpiry,
@@ -150,7 +150,7 @@ impl TryInto<TopicConfig> for &Value {
             .and_then(Value::as_array)
             .expect("invalid topic types")
         {
-            let topic_type: TopicType = t.try_into()?;
+            let topic_type: SkwTopicType = t.try_into()?;
             topic_types.push(topic_type);
         }
 
@@ -206,7 +206,7 @@ pub mod rpc {
         handler: H,
         pool_interval: Option<&str>,
         batch_size: Option<u32>,
-        topic_type: TopicType,
+        topic_type: SkwTopicType,
     ) -> Result<(), AppError>
     where
         ReceivedMessage: TryInto<Req>,
@@ -237,8 +237,7 @@ pub mod rpc {
         let batch_size = batch_size.unwrap_or(1);
 
         let mut iggy_consumer = iggy_client
-            .consumer_group(&consumer, &stream, &topic)
-            .map_err(|e| AppError::Custom(e.to_string()))?
+            .consumer_group(&consumer, &stream, &topic)?
             .auto_commit(AutoCommit::When(AutoCommitWhen::ConsumingEachMessage))
             .create_consumer_group_if_not_exists()
             .auto_join_consumer_group()
@@ -247,10 +246,7 @@ pub mod rpc {
             .batch_length(batch_size)
             .build();
 
-        iggy_consumer
-            .init()
-            .await
-            .map_err(|e| AppError::Custom(e.to_string()))?;
+        iggy_consumer.init().await?;
 
         let back_topic_producer = iggy_client
             .producer(&stream, &back_topic)
@@ -298,8 +294,8 @@ pub mod rpc {
             let signature = req.signature().to_string();
             let mut headers = BTreeMap::new();
             headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_SIGNATURE).map_err(|e| AppError::Custom(e.to_string()))?,
-                HeaderValue::from_str(&signature).map_err(|e| AppError::Custom(e.to_string()))?,
+                HeaderKey::from_str(IGGY_HEADER_SIGNATURE)?,
+                HeaderValue::from_str(&signature)?,
             );
 
             let meta = req.meta();
@@ -310,23 +306,22 @@ pub mod rpc {
 
             let ts_service_sent = Utc::now();
             headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_RECEIVED).map_err(|e| AppError::Custom(e.to_string()))?,
-                HeaderValue::from_str(&ts_service_received.to_rfc3339_opts(SecondsFormat::Nanos, true))
-                    .map_err(|e| AppError::Custom(e.to_string()))?,
+                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_RECEIVED)?,
+                HeaderValue::from_str(&ts_service_received.to_rfc3339_opts(SecondsFormat::Nanos, true))?,
             );
             headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_SENT).map_err(|e| AppError::Custom(e.to_string()))?,
-                HeaderValue::from_str(&ts_service_sent.to_rfc3339_opts(SecondsFormat::Nanos, true)).map_err(|e| AppError::Custom(e.to_string()))?,
+                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_SENT)?,
+                HeaderValue::from_str(&ts_service_sent.to_rfc3339_opts(SecondsFormat::Nanos, true))?,
             );
 
             let payload_bytes = match rpc_payload {
-                Ok(resp) => Bytes::copy_from_slice(&serde_json::to_vec(&resp).map_err(|e| AppError::Custom(e.to_string()))?),
+                Ok(resp) => Bytes::copy_from_slice(&serde_json::to_vec(&resp)?),
                 Err(svc_err) => {
                     // full error stays in the service log; only the client-facing code goes on the bus
                     error!("{}", svc_err);
                     headers.insert(
-                        HeaderKey::from_str(IGGY_HEADER_SERVICE_ERROR).map_err(|e| AppError::Custom(e.to_string()))?,
-                        HeaderValue::from_str(&svc_err.service_error().to_string()).map_err(|e| AppError::Custom(e.to_string()))?,
+                        HeaderKey::from_str(IGGY_HEADER_SERVICE_ERROR)?,
+                        HeaderValue::from_str(&svc_err.service_error().to_string())?,
                     );
                     Bytes::copy_from_slice(b"{}")
                 }
@@ -335,8 +330,7 @@ pub mod rpc {
             let message = IggyMessage::builder()
                 .payload(payload_bytes)
                 .user_headers(headers)
-                .build()
-                .map_err(|e| AppError::Custom(e.to_string()))?;
+                .build()?;
 
             if let Err(e) = back_topic_producer.send_one(message).await {
                 error!("error sending message to iggy: {}", e);
@@ -346,7 +340,7 @@ pub mod rpc {
         Ok(())
     }
 
-    pub fn get_config_topic_types() -> Result<Vec<TopicType>, AppError> {
+    pub fn get_config_topic_types() -> Result<Vec<SkwTopicType>, AppError> {
         APP.config
             .get(SERVICE_TOPIC_TYPES_PATH)
             .and_then(Value::as_array)
@@ -358,7 +352,7 @@ pub mod rpc {
             })?
             .iter()
             .unique()
-            .map(TopicType::try_from)
+            .map(SkwTopicType::try_from)
             .collect::<Result<Vec<_>, _>>()
     }
 
@@ -424,7 +418,7 @@ pub mod rpc {
     }
 }
 
-fn validate_rpc_methods_by_topics<M>(topic_types: &[TopicType])
+fn validate_rpc_methods_by_topics<M>(topic_types: &[SkwTopicType])
 where
     M: IntoEnumIterator + EnumProperty,
     for<'a> &'a M: Into<&'static str>,
@@ -435,13 +429,13 @@ where
 
     for m in M::iter() {
         let name: &'static str = (&m).into();
-        let signed: Option<TopicType> = m.get_str("topic").map(|tt| {
+        let signed: Option<SkwTopicType> = m.get_str("topic").map(|tt| {
             tt.parse()
                 .unwrap_or_else(|_| panic!("Invalid topic type: {tt}"))
         });
 
-        if let Some(TopicType::Signed) = signed
-            && !topic_types.iter().all(|t| t == &TopicType::Signed)
+        if let Some(SkwTopicType::Signed) = signed
+            && !topic_types.iter().all(|t| t == &SkwTopicType::Signed)
         {
             panic!("Error: signed method: {name} can be used in unsigned topics");
         }

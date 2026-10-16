@@ -107,7 +107,7 @@ pub mod axum {
 }
 
 pub mod jsonrpc {
-    pub use crate::jsonrpc::{JsonRpcErrorResponse, JsonRpcGateHttpRequest, JsonRpcResponse, ServiceHttpError, internal_http_request};
+    pub use crate::jsonrpc::{JsonRpcErrorResponse, JsonRpcGateHttpRequest, JsonRpcResponse, SkwServiceHttpError, internal_http_request};
 }
 
 pub mod log {
@@ -118,20 +118,20 @@ pub mod iggy {
     pub use crate::iggy::rpc::{
         RpcMessageTrait, RpcRequestMeta, get_config_topic_types, run_service_consumer, run_service_consumers_all_topic_types,
     };
-    pub use crate::iggy::{TopicConfig, TopicType};
+    pub use crate::iggy::{TopicConfig, SkwTopicType};
     pub use iggy::prelude::*;
 }
 
 pub mod postgres {
-    pub use crate::postgres::{Connected as PostgresConnected, PostgresError, PostgresPools};
+    pub use crate::postgres::{Connected as PostgresConnected, PostgresPools, SkwPostgresError};
 }
 
 pub mod rabbitmq {
-    pub use crate::rabbitmq::{QueueConfig, RabbitMqError, RabbitMqPublisher, TaskOutcome, run_task_consumer};
+    pub use crate::rabbitmq::{QueueConfig, RabbitMqPublisher, SkwRabbitMqError, TaskOutcome, run_task_consumer};
 }
 
 pub mod redis {
-    pub use crate::redis::{Redis, RedisError};
+    pub use crate::redis::{Redis, SkwRedisError};
     pub use redis::aio::ConnectionManager;
     pub use redis::{AsyncCommands, RedisResult};
 }

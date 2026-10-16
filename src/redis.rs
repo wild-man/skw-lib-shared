@@ -8,7 +8,7 @@ use crate::config::{Config, ConfigReady};
 use crate::{APP, prelude::consts::REDIS_URL_PATH};
 
 #[derive(Error, Debug)]
-pub enum RedisError {
+pub enum SkwRedisError {
     #[error("Other error: {0}")]
     Custom(String),
     #[error("redis error: {0}")]

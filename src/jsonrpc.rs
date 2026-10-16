@@ -18,7 +18,7 @@ pub struct JsonRpcGateHttpRequest {
 }
 
 #[derive(Serialize, Error, Debug, EnumString, Clone)]
-pub enum ServiceHttpError {
+pub enum SkwServiceHttpError {
     #[error("NotFound")]
     NotFound,
     #[error("Forbidden")]
@@ -31,10 +31,10 @@ pub enum ServiceHttpError {
     InternalServerError,
 }
 
-impl ServiceHttpError {
+impl SkwServiceHttpError {
     /// HTTP status of this error, shared by every gate/service reporting it to clients
     pub fn status_code(&self) -> StatusCode {
-        use ServiceHttpError::*;
+        use SkwServiceHttpError::*;
         match self {
             NotFound => StatusCode::NOT_FOUND,
             Forbidden => StatusCode::FORBIDDEN,
@@ -81,9 +81,9 @@ pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Seriali
     url: S,
     req: T,
 ) -> Result<String, AppError> {
-    use ServiceHttpError::*;
+    use SkwServiceHttpError::*;
 
-    let req_value: Value = serde_json::to_value(&req).map_err(|e| AppError::Custom(e.to_string()))?;
+    let req_value: Value = serde_json::to_value(&req)?;
     let method: &'static str = req.into(); // strum return method name
 
     let body = json!({

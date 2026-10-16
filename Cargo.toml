@@ -17,7 +17,7 @@ lapin = { workspace = true }
 redis = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
+#anyhow = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }

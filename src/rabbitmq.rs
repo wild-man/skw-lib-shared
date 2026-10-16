@@ -21,7 +21,7 @@ use crate::{APP, AppError, prelude::consts::RABBITMQ_URL_PATH, skw_get_consumer_
 use crate::config::{Config, ConfigReady};
 
 #[derive(Error, Debug)]
-pub enum RabbitMqError {
+pub enum SkwRabbitMqError {
     #[error("Other error: {0}")]
     Custom(String),
     #[error("lapin error: {0}")]
@@ -111,7 +111,7 @@ pub enum TaskOutcome {
     },
 }
 
-async fn declare_queue(channel: &Channel, queue: &QueueConfig) -> Result<(), RabbitMqError> {
+async fn declare_queue(channel: &Channel, queue: &QueueConfig) -> Result<(), SkwRabbitMqError> {
     channel
         .queue_declare(
             queue.name.as_str().into(),
@@ -137,14 +137,13 @@ where
 {
     let rabbitmq = APP.rabbitmq.clone().connect().await;
     let conn = rabbitmq.inner().expect("bad rabbitmq connection");
-    let channel = conn.create_channel().await.map_err(RabbitMqError::from)?;
+    let channel = conn.create_channel().await?;
 
     info!("connecting to rabbitmq. queue: {}", queue.name);
 
     channel
         .basic_qos(queue.prefetch_count, BasicQosOptions::default())
-        .await
-        .map_err(RabbitMqError::from)?;
+        .await?;
 
     declare_queue(&channel, &queue).await?;
 
@@ -156,8 +155,7 @@ where
             BasicConsumeOptions::default(), // no_ack: false — manual ack required
             FieldTable::default(),
         )
-        .await
-        .map_err(RabbitMqError::from)?;
+        .await?;
 
     while let Some(delivery) = consumer.next().await {
         let delivery = match delivery {
@@ -219,7 +217,7 @@ pub struct RabbitMqPublisher {
 }
 
 impl RabbitMqPublisher {
-    pub async fn new(queue: QueueConfig) -> Result<Self, RabbitMqError> {
+    pub async fn new(queue: QueueConfig) -> Result<Self, SkwRabbitMqError> {
         let rabbitmq = APP.rabbitmq.clone().connect().await;
         let conn = rabbitmq.inner().expect("bad rabbitmq connection");
         let channel = conn.create_channel().await?;
@@ -237,8 +235,8 @@ impl RabbitMqPublisher {
         })
     }
 
-    pub async fn publish<T: Serialize>(&self, task: &T) -> Result<(), RabbitMqError> {
-        let payload = serde_json::to_vec(task).map_err(|e| RabbitMqError::Custom(e.to_string()))?;
+    pub async fn publish<T: Serialize>(&self, task: &T) -> Result<(), SkwRabbitMqError> {
+        let payload = serde_json::to_vec(task).map_err(|e| SkwRabbitMqError::Custom(e.to_string()))?;
 
         let confirm = self
             .channel
@@ -253,7 +251,7 @@ impl RabbitMqPublisher {
 
         let confirmation = confirm.await?;
         if !confirmation.is_ack() {
-            return Err(RabbitMqError::Custom(format!(
+            return Err(SkwRabbitMqError::Custom(format!(
                 "broker did not confirm publish to {}: {:?}",
                 self.queue.name, confirmation
             )));

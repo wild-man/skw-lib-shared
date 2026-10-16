@@ -3,10 +3,12 @@ use env_logger::{Builder, Target};
 
 use base64::prelude::*;
 use config::{Config, ConfigReady};
+use lapin::Error as LapinError;
 use postgres::{Loaded as PostgresLoaded, PostgresPools};
 use rand::RngCore;
 use reqwest::{Client as ReqwestClient, Error as ReqwestError};
 use sqlx::migrate::MigrateError;
+use std::io::Error;
 use std::sync::LazyLock;
 use std::time::Duration;
 use thiserror::Error;
@@ -21,12 +23,12 @@ mod redis;
 
 pub mod prelude;
 
-use crate::iggy::{Iggy, Loaded as IggyLoaded, TopicType};
-use crate::rabbitmq::{Loaded as RabbitMqLoaded, RabbitMq};
+use crate::iggy::{Iggy, Loaded as IggyLoaded, SkwIggyError, SkwTopicType};
+use crate::rabbitmq::{Loaded as RabbitMqLoaded, RabbitMq, SkwRabbitMqError};
 use crate::redis::{Loaded as RedisLoaded, Redis};
 use prelude::log::info;
 
-use crate::jsonrpc::ServiceHttpError;
+use crate::jsonrpc::SkwServiceHttpError;
 use crate::prelude::consts::{DEFAULT_ENVIRONMENT, IGGY_STREAM_PREFIX, SERVICE_NAME_PATH, VERSION};
 
 pub type RequestId = String;
@@ -52,28 +54,64 @@ pub enum AppError {
     #[error("Migration error: {0}")]
     Migration(#[from] MigrateError),
     #[error("Postgres error: {0}")]
-    Postgres(#[from] postgres::PostgresError),
+    Postgres(#[from] postgres::SkwPostgresError),
     #[error("Iggy error: {0}")]
-    Iggy(#[from] iggy::IggyError),
+    Iggy(#[from] iggy::SkwIggyError),
     #[error("RabbitMq error: {0}")]
-    RabbitMq(#[from] rabbitmq::RabbitMqError),
+    RabbitMq(#[from] rabbitmq::SkwRabbitMqError),
     #[error("Redis error: {0}")]
-    Redis(#[from] redis::RedisError),
+    Redis(#[from] redis::SkwRedisError),
     #[error("Reqwest error: {0}")]
     Reqwest(#[from] ReqwestError),
     #[error("Service error: {0}")]
-    Service(#[from] ServiceHttpError),
+    Service(#[from] SkwServiceHttpError),
     #[error("Deserialize error: {0}")]
     Serde(#[from] serde_json::Error),
+}
+
+impl From<::iggy::prelude::IggyError> for AppError {
+    fn from(e: ::iggy::prelude::IggyError) -> Self {
+        AppError::Iggy(SkwIggyError::Iggy(e.into()))
+    }
+}
+
+impl From<LapinError> for AppError {
+    fn from(e: LapinError) -> Self {
+        AppError::RabbitMq(SkwRabbitMqError::Lapin(e))
+    }
+}
+
+impl From<Error> for AppError {
+    fn from(e: Error) -> Self {
+        AppError::Custom(e.to_string())
+    }
+}
+
+impl From<&str> for AppError {
+    fn from(e: &str) -> Self {
+        AppError::Custom(e.into())
+    }
+}
+
+impl From<String> for AppError {
+    fn from(e: String) -> Self {
+        AppError::Custom(e.into())
+    }
+}
+
+impl From<::redis::RedisError> for AppError {
+    fn from(e: ::redis::RedisError) -> Self {
+        AppError::Redis(e.into())
+    }
 }
 
 impl AppError {
     /// Client-facing error code; internal failures (db, redis, iggy, ...) collapse into
     /// InternalServerError so their details never leak to the client.
-    pub fn service_error(&self) -> ServiceHttpError {
+    pub fn service_error(&self) -> SkwServiceHttpError {
         match self {
             AppError::Service(e) => e.clone(),
-            _ => ServiceHttpError::InternalServerError,
+            _ => SkwServiceHttpError::InternalServerError,
         }
     }
 }
@@ -87,14 +125,18 @@ pub fn skw_get_back_topic_name() -> String {
 }
 
 pub fn skw_get_consumer_name(topic: &str) -> String {
-    format!("consumer-{}", topic)
+    format!(
+        "consumer-{}-{}",
+        APP.config.expect_str(SERVICE_NAME_PATH),
+        topic
+    )
 }
 
 pub fn skw_get_queue_name(base: &str) -> String {
     format!("{}-{}", base, VERSION)
 }
 
-pub fn skw_get_stream_topic_name(topic_type: TopicType) -> String {
+pub fn skw_get_stream_topic_name(topic_type: SkwTopicType) -> String {
     let srv = APP
         .config
         .expect_str(SERVICE_NAME_PATH)

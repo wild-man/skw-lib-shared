@@ -12,7 +12,7 @@ use crate::{
 };
 
 #[derive(Error, Debug)]
-pub enum PostgresError {
+pub enum SkwPostgresError {
     #[error("Other error: {0}")]
     Custom(String),
     #[error("sqlx::Error: {0}")]
@@ -107,7 +107,7 @@ fn configure_pool(mut options: PgPoolOptions, cfg_path: &str) -> PgPoolOptions {
 }
 
 impl PostgresPools<Loaded> {
-    pub async fn connect(&self) -> Result<PostgresPools<Connected>, PostgresError> {
+    pub async fn connect(&self) -> Result<PostgresPools<Connected>, SkwPostgresError> {
         let master_pool = match self.master_url {
             Some(ref url) => {
                 info!("Connecting postgres master");
@@ -137,14 +137,14 @@ impl PostgresPools<Loaded> {
 }
 
 impl PostgresPools<Connected> {
-    pub async fn master(&self) -> Result<&PgPool, PostgresError> {
-        self.master_pool.as_ref().ok_or(PostgresError::Custom(
+    pub async fn master(&self) -> Result<&PgPool, SkwPostgresError> {
+        self.master_pool.as_ref().ok_or(SkwPostgresError::Custom(
             "Master pool not connected".to_string(),
         ))
     }
 
-    pub async fn slave(&self) -> Result<&PgPool, PostgresError> {
-        self.slave_pool.as_ref().ok_or(PostgresError::Custom(
+    pub async fn slave(&self) -> Result<&PgPool, SkwPostgresError> {
+        self.slave_pool.as_ref().ok_or(SkwPostgresError::Custom(
             "Slave pool not connected".to_string(),
         ))
     }
