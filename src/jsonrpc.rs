@@ -45,6 +45,23 @@ impl SkwServiceHttpError {
     }
 }
 
+/// Status of a provisional reply: the request is taken, its final reply comes later under the
+/// same signature. `Display` is the Iggy `response-status` header value.
+#[derive(Serialize, Debug, strum::Display, EnumString, Clone, Copy, PartialEq, Eq)]
+pub enum SkwServiceStatus {
+    Created,
+    Accepted,
+}
+
+impl SkwServiceStatus {
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            SkwServiceStatus::Created => StatusCode::CREATED,
+            SkwServiceStatus::Accepted => StatusCode::ACCEPTED,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct JsonRpcResponse<REQ: Deserialize<'static>, RESP: Serialize> {
     _request: REQ,

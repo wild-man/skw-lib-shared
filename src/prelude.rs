@@ -3,8 +3,8 @@ pub use crate::RequestId;
 
 pub mod tools {
     pub use crate::{
-        skw_get_back_topic_name, skw_get_consumer_name, skw_get_queue_name, skw_get_stream_name, skw_get_stream_topic_name, skw_is_valid_name,
-        skw_random_signature,
+        skw_get_back_topic_name, skw_get_consumer_name, skw_get_queue_name, skw_get_stream_name, skw_get_stream_topic_name,
+        skw_get_task_done_notify_topic_name, skw_is_valid_name, skw_random_signature,
     };
     pub use bytes::Bytes;
     pub use itertools::Itertools;
@@ -50,6 +50,10 @@ pub mod consts {
 
     // used when service had signature and response with error (BadRequest, NotFound, Forbidden, ...)
     pub const IGGY_HEADER_SERVICE_ERROR: &str = "err-response-code";
+
+    // set on a provisional (non-final) reply: Created | Accepted. The final reply for the same
+    // signature follows later (possibly from another process); absent = final reply.
+    pub const IGGY_HEADER_SERVICE_STATUS: &str = "response-status";
 
     // request-timing trace headers, stamped by the service on the back-topic response message
     pub const IGGY_HEADER_TS_SERVICE_RECEIVED: &str = "ts-service-received";
@@ -107,7 +111,9 @@ pub mod axum {
 }
 
 pub mod jsonrpc {
-    pub use crate::jsonrpc::{JsonRpcErrorResponse, JsonRpcGateHttpRequest, JsonRpcResponse, SkwServiceHttpError, internal_http_request};
+    pub use crate::jsonrpc::{
+        JsonRpcErrorResponse, JsonRpcGateHttpRequest, JsonRpcResponse, SkwServiceHttpError, SkwServiceStatus, internal_http_request,
+    };
 }
 
 pub mod log {
@@ -116,9 +122,10 @@ pub mod log {
 
 pub mod iggy {
     pub use crate::iggy::rpc::{
-        RpcMessageTrait, RpcRequestMeta, get_config_topic_types, run_service_consumer, run_service_consumers_all_topic_types,
+        RpcMessageTrait, RpcReply, RpcRequestMeta, get_config_topic_types, run_service_consumer, run_service_consumers_all_topic_types,
     };
-    pub use crate::iggy::{TopicConfig, SkwTopicType};
+    pub use crate::iggy::task_done::TaskDonePublisher;
+    pub use crate::iggy::{SkwTopicType, TopicConfig};
     pub use iggy::prelude::*;
 }
 
@@ -127,7 +134,7 @@ pub mod postgres {
 }
 
 pub mod rabbitmq {
-    pub use crate::rabbitmq::{QueueConfig, RabbitMqPublisher, SkwRabbitMqError, TaskOutcome, run_task_consumer};
+    pub use crate::rabbitmq::{QueueConfig, RabbitMqPublisher, SkwMqTaskTrait, SkwRabbitMqError, TaskOutcome, run_task_consumer};
 }
 
 pub mod redis {

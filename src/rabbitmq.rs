@@ -18,6 +18,14 @@ use thiserror::Error;
 use crate::prelude::log::{error, info, warn};
 use crate::{APP, AppError, prelude::consts::RABBITMQ_URL_PATH, skw_get_consumer_name, skw_get_queue_name};
 
+/// A RabbitMQ task payload (task-protos). Required wherever a task is published or consumed,
+/// so every task has a name, e.g. for its done-notification topic
+/// ([`skw_get_task_done_notify_topic_name`](crate::skw_get_task_done_notify_topic_name)).
+pub trait SkwMqTaskTrait {
+    /// stable task name, used in Iggy topic names: ascii letters, digits, `-`, `_`, `.`
+    fn task_name() -> &'static str;
+}
+
 use crate::config::{Config, ConfigReady};
 
 #[derive(Error, Debug)]
@@ -131,7 +139,7 @@ async fn declare_queue(channel: &Channel, queue: &QueueConfig) -> Result<(), Skw
 /// delivery is ack'd/nack'd per `handler`'s returned `TaskOutcome`.
 pub async fn run_task_consumer<Task, H, Fut>(queue: QueueConfig, handler: H) -> Result<(), AppError>
 where
-    Task: DeserializeOwned,
+    Task: DeserializeOwned + SkwMqTaskTrait,
     H: Fn(Task) -> Fut,
     Fut: Future<Output = TaskOutcome>,
 {
@@ -235,7 +243,7 @@ impl RabbitMqPublisher {
         })
     }
 
-    pub async fn publish<T: Serialize>(&self, task: &T) -> Result<(), SkwRabbitMqError> {
+    pub async fn publish<T: Serialize + SkwMqTaskTrait>(&self, task: &T) -> Result<(), SkwRabbitMqError> {
         let payload = serde_json::to_vec(task).map_err(|e| SkwRabbitMqError::Custom(e.to_string()))?;
 
         let confirm = self

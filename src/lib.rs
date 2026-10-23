@@ -132,6 +132,11 @@ pub fn skw_get_consumer_name(topic: &str) -> String {
     )
 }
 
+/// Iggy topic a finished `T` task is announced on: `task-done-notify-{T::task_name()}`.
+pub fn skw_get_task_done_notify_topic_name<T: rabbitmq::SkwMqTaskTrait>() -> String {
+    format!("task-done-notify-{}-{}", T::task_name(), VERSION)
+}
+
 pub fn skw_get_queue_name(base: &str) -> String {
     format!("{}-{}", base, VERSION)
 }

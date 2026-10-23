@@ -171,8 +171,9 @@ impl TryInto<TopicConfig> for &Value {
 pub mod rpc {
     use super::*;
     use crate::prelude::consts::SERVICE_TOPIC_TYPES_PATH;
-    use crate::prelude::consts::{BACK_MESSAGE_TIMEOUT, IGGY_HEADER_TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_SENT};
-    use chrono::{SecondsFormat, Utc};
+    use crate::prelude::consts::{BACK_MESSAGE_TIMEOUT, IGGY_HEADER_SERVICE_STATUS, IGGY_HEADER_TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_SENT};
+    use crate::prelude::jsonrpc::SkwServiceStatus;
+    use chrono::{DateTime, SecondsFormat, Utc};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::task::JoinSet;
 
@@ -202,6 +203,65 @@ pub mod rpc {
         }
     }
 
+    /// Reply payload of an RPC handler. `status()` = Some → provisional reply (Created/Accepted):
+    /// the request is taken (e.g. a task queued), its result is read later; still the last reply.
+    pub trait RpcReply: Serialize {
+        fn status(&self) -> Option<SkwServiceStatus> {
+            None
+        }
+    }
+
+    /// Back-topic message answering `signature`: the payload (+ provisional status header), or the
+    /// error header + `{}`.
+    fn build_back_message<Resp: RpcReply>(
+        signature: &str,
+        result: Result<Resp, AppError>,
+        ts_service_received: Option<DateTime<Utc>>,
+    ) -> Result<IggyMessage, AppError> {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            HeaderKey::from_str(IGGY_HEADER_SIGNATURE)?,
+            HeaderValue::from_str(signature)?,
+        );
+
+        if let Some(ts) = ts_service_received {
+            headers.insert(
+                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_RECEIVED)?,
+                HeaderValue::from_str(&ts.to_rfc3339_opts(SecondsFormat::Nanos, true))?,
+            );
+        }
+        headers.insert(
+            HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_SENT)?,
+            HeaderValue::from_str(&Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true))?,
+        );
+
+        let payload_bytes = match result {
+            Ok(resp) => {
+                if let Some(status) = resp.status() {
+                    headers.insert(
+                        HeaderKey::from_str(IGGY_HEADER_SERVICE_STATUS)?,
+                        HeaderValue::from_str(&status.to_string())?,
+                    );
+                }
+                Bytes::copy_from_slice(&serde_json::to_vec(&resp)?)
+            }
+            Err(svc_err) => {
+                // full error stays in the service log; only the client-facing code goes on the bus
+                error!("{}", svc_err);
+                headers.insert(
+                    HeaderKey::from_str(IGGY_HEADER_SERVICE_ERROR)?,
+                    HeaderValue::from_str(&svc_err.service_error().to_string())?,
+                );
+                Bytes::copy_from_slice(b"{}")
+            }
+        };
+
+        Ok(IggyMessage::builder()
+            .payload(payload_bytes)
+            .user_headers(headers)
+            .build()?)
+    }
+
     pub async fn run_service_consumer<Req, H, Fut, Resp>(
         handler: H,
         pool_interval: Option<&str>,
@@ -214,7 +274,7 @@ pub mod rpc {
         Req: RpcMessageTrait,
         H: Fn(Req::RpcMethod, RpcRequestMeta) -> Fut,
         Fut: Future<Output = Result<Resp, AppError>>,
-        Resp: Serialize,
+        Resp: RpcReply,
     {
         let stream = skw_get_stream_name();
         let topic = skw_get_stream_topic_name(topic_type);
@@ -292,11 +352,6 @@ pub mod rpc {
             };
 
             let signature = req.signature().to_string();
-            let mut headers = BTreeMap::new();
-            headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_SIGNATURE)?,
-                HeaderValue::from_str(&signature)?,
-            );
 
             let meta = req.meta();
             let rpc_payload = match req.into_rpc_method() {
@@ -304,33 +359,7 @@ pub mod rpc {
                 Err(svc_err) => Err(svc_err),
             };
 
-            let ts_service_sent = Utc::now();
-            headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_RECEIVED)?,
-                HeaderValue::from_str(&ts_service_received.to_rfc3339_opts(SecondsFormat::Nanos, true))?,
-            );
-            headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_SENT)?,
-                HeaderValue::from_str(&ts_service_sent.to_rfc3339_opts(SecondsFormat::Nanos, true))?,
-            );
-
-            let payload_bytes = match rpc_payload {
-                Ok(resp) => Bytes::copy_from_slice(&serde_json::to_vec(&resp)?),
-                Err(svc_err) => {
-                    // full error stays in the service log; only the client-facing code goes on the bus
-                    error!("{}", svc_err);
-                    headers.insert(
-                        HeaderKey::from_str(IGGY_HEADER_SERVICE_ERROR)?,
-                        HeaderValue::from_str(&svc_err.service_error().to_string())?,
-                    );
-                    Bytes::copy_from_slice(b"{}")
-                }
-            };
-
-            let message = IggyMessage::builder()
-                .payload(payload_bytes)
-                .user_headers(headers)
-                .build()?;
+            let message = build_back_message(&signature, rpc_payload, Some(ts_service_received))?;
 
             if let Err(e) = back_topic_producer.send_one(message).await {
                 error!("error sending message to iggy: {}", e);
@@ -372,7 +401,7 @@ pub mod rpc {
         for<'a> &'a Req::RpcMethod: Into<&'static str>,
         H: Fn(Req::RpcMethod, RpcRequestMeta) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<Resp, AppError>> + Send,
-        Resp: Serialize + Send,
+        Resp: RpcReply + Send,
     {
         let topic_types = get_config_topic_types()?;
 
@@ -415,6 +444,85 @@ pub mod rpc {
         }
 
         Err(AppError::Custom("all topic consumers stopped".into()))
+    }
+}
+
+/// "Task done" notifications: a RabbitMQ worker announces finished tasks on the task's own Iggy
+/// topic (`skw_get_task_done_notify_topic_name`), never on the gates' back topic — workers don't
+/// answer clients. Who reads these topics is up to their consumers.
+pub mod task_done {
+    use super::*;
+    use crate::{jsonrpc::SkwServiceStatus, prelude::consts::IGGY_HEADER_SERVICE_STATUS, skw_is_valid_name};
+
+    pub struct TaskDonePublisher {
+        producer: IggyProducer,
+        topic: String,
+        _iggy_client: Arc<IggyClient>,
+    }
+
+    impl TaskDonePublisher {
+        /// Producer on `topic` in the service stream; the topic is created if missing,
+        /// as nothing else creates it while it has no consumer.
+        pub async fn new(topic: &str) -> Result<Self, AppError> {
+            skw_is_valid_name(topic).ok_or_else(|| AppError::Custom(format!("invalid topic name: {topic}")))?;
+
+            warn!("Done publisher topic: {}", topic);
+
+            let iggy = APP.iggy.clone().connect().await;
+            let iggy_client = iggy
+                .inner()
+                .ok_or_else(|| AppError::Custom("bad iggy client".into()))?;
+
+            let producer = iggy_client
+                .producer(&skw_get_stream_name(), topic)?
+                .partitioning(Partitioning::balanced())
+                .create_topic_if_not_exists(
+                    1,
+                    None,
+                    IggyExpiry::ServerDefault,
+                    MaxTopicSize::ServerDefault,
+                )
+                .build();
+            producer.init().await?;
+
+            info!("task done notifications go to topic: {}", topic);
+
+            Ok(Self {
+                producer,
+                topic: topic.to_string(),
+                _iggy_client: iggy_client,
+            })
+        }
+
+        pub fn topic(&self) -> &str {
+            &self.topic
+        }
+
+        /// Publishes `payload` (JSON) as one notification.
+        pub async fn publish<T: Serialize>(&self, signature: &str, payload: &T, status: Option<SkwServiceStatus>) -> Result<(), AppError> {
+            let mut headers = BTreeMap::new();
+
+            headers.insert(
+                HeaderKey::from_str(IGGY_HEADER_SIGNATURE)?,
+                HeaderValue::from_str(&signature)?,
+            );
+
+            if let Some(status) = status {
+                headers.insert(
+                    HeaderKey::from_str(IGGY_HEADER_SERVICE_STATUS)?,
+                    HeaderValue::from_str(&status.to_string())?,
+                );
+            }
+
+            let message = IggyMessage::builder()
+                .payload(Bytes::from(serde_json::to_vec(payload)?))
+                .user_headers(headers)
+                .build()?;
+
+            self.producer.send_one(message).await?;
+
+            Ok(())
+        }
     }
 }
 
