@@ -41,22 +41,23 @@ impl<S: RedisStates> Redis<S> {
 }
 
 impl Redis<Loaded> {
-    pub async fn connect(self) -> Redis<Connected> {
+    pub async fn connect(self) -> Result<Redis<Connected>, SkwRedisError> {
         let url = APP.config.expect_str(REDIS_URL_PATH);
-        let client = Client::open(url).expect("invalid redis url");
-        let manager = ConnectionManager::new(client)
-            .await
-            .expect("cant connect to redis");
+        let client = Client::open(url)?;
+        let manager = ConnectionManager::new(client).await?;
 
-        Redis::<Connected> {
+        Ok(Redis::<Connected> {
             connection: Some(manager),
             _state: PhantomData,
-        }
+        })
     }
 }
 
 impl Redis<Connected> {
-    pub fn inner(&self) -> Option<ConnectionManager> {
-        self.connection.clone()
+    pub fn inner(&self) -> ConnectionManager {
+        // `Connected` is only built by `connect()`, which always sets the connection
+        self.connection
+            .clone()
+            .expect("Redis<Connected> always holds a connection")
     }
 }

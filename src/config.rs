@@ -172,7 +172,8 @@ impl Config<ConfigReady> {
         self.config
             .as_ref()
             .and_then(|cfg| cfg.pointer(path))
-            .and_then(|v| v.as_u64().map(|x| x as u32))
+            .and_then(|v| v.as_u64())
+            .and_then(|x| u32::try_from(x).ok()) // out of range is invalid, not truncated
             .unwrap_or_else(|| panic!("invalid u32 config value: {}", path))
     }
 }

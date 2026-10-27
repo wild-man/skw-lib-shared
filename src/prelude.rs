@@ -4,7 +4,7 @@ pub use crate::RequestId;
 pub mod tools {
     pub use crate::{
         skw_get_back_topic_name, skw_get_consumer_name, skw_get_queue_name, skw_get_stream_name, skw_get_stream_topic_name,
-        skw_get_task_done_notify_topic_name, skw_is_valid_name, skw_random_signature,
+        skw_get_task_done_notify_topic_name, skw_is_outdated, skw_is_valid_name, skw_random_signature,
     };
     pub use bytes::Bytes;
     pub use itertools::Itertools;
@@ -125,7 +125,7 @@ pub mod iggy {
         RpcMessageTrait, RpcReply, RpcRequestMeta, get_config_topic_types, run_service_consumer, run_service_consumers_all_topic_types,
     };
     pub use crate::iggy::task_done::TaskDonePublisher;
-    pub use crate::iggy::{SkwTopicType, TopicConfig};
+    pub use crate::iggy::{SkwTopicType, TopicConfig, header_keys, header_str};
     pub use iggy::prelude::*;
 }
 

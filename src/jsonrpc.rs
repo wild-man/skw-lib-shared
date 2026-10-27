@@ -1,14 +1,15 @@
 use std::fmt::Display;
 
 use crate::prelude::axum::{AxumJson, AxumResponse, IntoAxumResponse, StatusCode};
-use crate::prelude::{chrono::*, serde::*, strum::EnumString};
+use crate::prelude::{chrono::*, log::error, serde::*, strum::EnumString};
 use crate::{APP, AppError};
 use reqwest::IntoUrl;
 use thiserror::Error;
 
 const ERR_ANSWER: AxumJson<&str> = AxumJson("{}");
 
-/// запрос который приходит на gate в http
+/// Request body a client sends to a gate: `{"Ts", "Method", "Params"}`. For signed requests these
+/// exact bytes are what the signature covers, `Ts` included (see `skw_is_outdated`).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct JsonRpcGateHttpRequest {
@@ -120,13 +121,25 @@ pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Seriali
 
     // debug!("{:?}", &resp);
 
-    match resp.status() {
-        StatusCode::FORBIDDEN => return Err(Forbidden.into()),
-        StatusCode::NOT_FOUND => return Err(NotFound.into()),
-        StatusCode::BAD_REQUEST => return Err(BadRequest.into()),
-        StatusCode::UNPROCESSABLE_ENTITY => return Err(UnprocessableEntity.into()),
-        StatusCode::INTERNAL_SERVER_ERROR => return Err(InternalServerError.into()),
-        _ => {}
+    // any non-2xx is an error: a 502/503 page must not reach the caller as a payload
+    let status = resp.status();
+    if !status.is_success() {
+        let err = match status {
+            StatusCode::FORBIDDEN => Forbidden,
+            StatusCode::NOT_FOUND => NotFound,
+            StatusCode::BAD_REQUEST => BadRequest,
+            StatusCode::UNPROCESSABLE_ENTITY => UnprocessableEntity,
+            // 401, 429, 5xx, ...: the callee failed or is unreachable; to the caller it's internal
+            _ => {
+                error!(
+                    "internal request {} -> unexpected status {}",
+                    resp.url(),
+                    status
+                );
+                InternalServerError
+            }
+        };
+        return Err(err.into());
     }
 
     let resp_text = resp.text().await?;
@@ -134,4 +147,49 @@ pub async fn internal_http_request<S: AsRef<str> + IntoUrl + Display, T: Seriali
     // debug!("response: {}", resp_text);
 
     Ok(resp_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `Display` is the Iggy header value services send and gates parse back
+    #[test]
+    fn service_error_header_round_trips() {
+        use SkwServiceHttpError::*;
+        for (e, code) in [
+            (NotFound, 404),
+            (Forbidden, 403),
+            (BadRequest, 400),
+            (UnprocessableEntity, 422),
+            (InternalServerError, 500),
+        ] {
+            let parsed: SkwServiceHttpError = e.to_string().parse().unwrap();
+            assert_eq!(parsed.status_code().as_u16(), code, "{e}");
+        }
+        assert!("Teapot".parse::<SkwServiceHttpError>().is_err());
+    }
+
+    #[test]
+    fn service_status_header_round_trips() {
+        for (s, code) in [
+            (SkwServiceStatus::Created, 201),
+            (SkwServiceStatus::Accepted, 202),
+        ] {
+            let parsed: SkwServiceStatus = s.to_string().parse().unwrap();
+            assert_eq!(parsed, s);
+            assert_eq!(parsed.status_code().as_u16(), code);
+        }
+    }
+
+    #[test]
+    fn gate_request_keeps_method_and_params() {
+        let req: JsonRpcGateHttpRequest = serde_json::from_str(r#"{"Ts":"2026-01-01T00:00:00Z","Method":"Ping","Params":{"A":1}}"#).unwrap();
+        assert_eq!(req.method["Method"], "Ping");
+        assert_eq!(req.method["Params"]["A"], 1);
+        assert!(
+            req.method.get("Ts").is_none(),
+            "Ts is a field, not part of the method"
+        );
+    }
 }

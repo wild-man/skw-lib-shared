@@ -14,8 +14,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
-#[allow(unused_imports)]
-use crate::prelude::log::{error, info, warn};
+use crate::prelude::log::{error, info};
 use crate::{APP, AppError, prelude::consts::RABBITMQ_URL_PATH, skw_get_consumer_name, skw_get_queue_name};
 
 /// A RabbitMQ task payload (task-protos). Required wherever a task is published or consumed,
@@ -62,7 +61,7 @@ impl<S: RabbitMqStates> RabbitMq<S> {
 }
 
 impl RabbitMq<Loaded> {
-    pub async fn connect(self) -> RabbitMq<Connected> {
+    pub async fn connect(self) -> Result<RabbitMq<Connected>, SkwRabbitMqError> {
         let url = APP.config.expect_str(RABBITMQ_URL_PATH);
 
         // auto_recover: transparently reconnects and replays queue/consumer topology
@@ -70,20 +69,21 @@ impl RabbitMq<Loaded> {
         // the orchestrator for every transient connection drop.
         let props = ConnectionProperties::default().enable_auto_recover();
 
-        let conn = Connection::connect(url, props)
-            .await
-            .expect("cant connect to rabbitmq");
+        let conn = Connection::connect(url, props).await?;
 
-        RabbitMq::<Connected> {
+        Ok(RabbitMq::<Connected> {
             connection: Some(Arc::new(conn)),
             _state: PhantomData,
-        }
+        })
     }
 }
 
 impl RabbitMq<Connected> {
-    pub fn inner(&self) -> Option<Arc<Connection>> {
-        self.connection.clone()
+    pub fn inner(&self) -> Arc<Connection> {
+        // `Connected` is only built by `connect()`, which always sets the connection
+        self.connection
+            .clone()
+            .expect("RabbitMq<Connected> always holds a connection")
     }
 }
 
@@ -134,17 +134,18 @@ async fn declare_queue(channel: &Channel, queue: &QueueConfig) -> Result<(), Skw
     Ok(())
 }
 
-/// Runs a manual-ack consumer loop against `queue`, blocking the caller for the
-/// A message that fails to deserialize is nack'd with `requeue`; otherwise the
-/// delivery is ack'd/nack'd per `handler`'s returned `TaskOutcome`.
+/// Runs a manual-ack consumer loop against `queue`, blocking the caller while the consumer lives.
+/// Deliveries are handled concurrently, up to `queue.prefetch_count` at once (in one task, so
+/// `handler` needs no `Send`); completion order is not delivery order. A message that
+/// fails to deserialize is nack'd without requeue; otherwise the delivery is ack'd/nack'd per
+/// `handler`'s returned `TaskOutcome`.
 pub async fn run_task_consumer<Task, H, Fut>(queue: QueueConfig, handler: H) -> Result<(), AppError>
 where
     Task: DeserializeOwned + SkwMqTaskTrait,
     H: Fn(Task) -> Fut,
     Fut: Future<Output = TaskOutcome>,
 {
-    let rabbitmq = APP.rabbitmq.clone().connect().await;
-    let conn = rabbitmq.inner().expect("bad rabbitmq connection");
+    let conn = APP.rabbitmq.clone().connect().await?.inner();
     let channel = conn.create_channel().await?;
 
     info!("connecting to rabbitmq. queue: {}", queue.name);
@@ -156,7 +157,7 @@ where
     declare_queue(&channel, &queue).await?;
 
     let consumer_tag = skw_get_consumer_name(&queue.name);
-    let mut consumer = channel
+    let consumer = channel
         .basic_consume(
             queue.name.as_str().into(),
             consumer_tag.as_str().into(),
@@ -165,53 +166,56 @@ where
         )
         .await?;
 
-    while let Some(delivery) = consumer.next().await {
-        let delivery = match delivery {
-            Ok(delivery) => delivery,
-            Err(e) => {
-                error!("error receiving rabbitmq delivery: {e}");
-                continue;
-            }
-        };
+    // up to `prefetch_count` tasks run at once (the broker never has more unacked deliveries
+    // in flight), so one slow or retrying task doesn't hold up the others
+    let concurrency = usize::from(queue.prefetch_count.max(1));
+    let handler = &handler;
 
-        let task: Task = match serde_json::from_slice(&delivery.data) {
-            Ok(task) => task,
-            Err(e) => {
-                error!("bad task payload: {e}");
-                if let Err(e) = delivery
-                    .acker
-                    .nack(BasicNackOptions {
-                        requeue: false, // if message can't be deserialized force to not requeue
-                        ..Default::default()
-                    })
-                    .await
-                {
-                    error!("nack failed: {e}");
+    consumer
+        .for_each_concurrent(concurrency, |delivery| async move {
+            let delivery = match delivery {
+                Ok(delivery) => delivery,
+                Err(e) => {
+                    error!("error receiving rabbitmq delivery: {e}");
+                    return;
                 }
-                continue;
-            }
-        };
+            };
 
-        match handler(task).await {
-            TaskOutcome::Ack => {
-                if let Err(e) = delivery.acker.ack(BasicAckOptions::default()).await {
-                    error!("ack failed: {e}");
+            let task: Task = match serde_json::from_slice(&delivery.data) {
+                Ok(task) => task,
+                Err(e) => {
+                    error!("bad task payload: {e}");
+                    if let Err(e) = delivery
+                        .acker
+                        .nack(BasicNackOptions {
+                            requeue: false, // if message can't be deserialized force to not requeue
+                            ..Default::default()
+                        })
+                        .await
+                    {
+                        error!("nack failed: {e}");
+                    }
+                    return;
                 }
-            }
-            TaskOutcome::Nack { requeue } => {
-                if let Err(e) = delivery
-                    .acker
-                    .nack(BasicNackOptions {
-                        requeue,
-                        ..Default::default()
-                    })
-                    .await
-                {
-                    error!("nack failed: {e}");
+            };
+
+            let result = match handler(task).await {
+                TaskOutcome::Ack => delivery.acker.ack(BasicAckOptions::default()).await,
+                TaskOutcome::Nack { requeue } => {
+                    delivery
+                        .acker
+                        .nack(BasicNackOptions {
+                            requeue,
+                            ..Default::default()
+                        })
+                        .await
                 }
+            };
+            if let Err(e) = result {
+                error!("ack/nack failed: {e}");
             }
-        }
-    }
+        })
+        .await;
 
     Ok(())
 }
@@ -226,8 +230,7 @@ pub struct RabbitMqPublisher {
 
 impl RabbitMqPublisher {
     pub async fn new(queue: QueueConfig) -> Result<Self, SkwRabbitMqError> {
-        let rabbitmq = APP.rabbitmq.clone().connect().await;
-        let conn = rabbitmq.inner().expect("bad rabbitmq connection");
+        let conn = APP.rabbitmq.clone().connect().await?.inner();
         let channel = conn.create_channel().await?;
 
         // required for publish() to be able to await a real broker confirmation

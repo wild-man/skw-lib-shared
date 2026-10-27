@@ -8,12 +8,9 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, fmt::Display, future::Future, str::FromStr};
 use strum::{Display, EnumProperty, EnumString, IntoEnumIterator};
 
-#[allow(unused_imports)]
 use crate::prelude::log::{error, info, warn};
 use crate::{
-    APP, AppError,
-    prelude::consts::{IGGY_HEADER_SERVICE_ERROR, IGGY_HEADER_SIGNATURE, IGGY_URL_PATH},
-    skw_get_back_topic_name, skw_get_consumer_name, skw_get_stream_name, skw_get_stream_topic_name,
+    APP, AppError, prelude::consts::IGGY_URL_PATH, skw_get_back_topic_name, skw_get_consumer_name, skw_get_stream_name, skw_get_stream_topic_name,
 };
 
 use iggy::{
@@ -24,6 +21,37 @@ use serde_json::Value;
 
 use crate::config::{Config, ConfigReady};
 use thiserror::Error;
+
+/// Iggy header keys, built once from the `IGGY_HEADER_*` names in `prelude::consts`
+/// (valid constant names, so building them can't fail; `header_keys_build` checks every one).
+pub mod header_keys {
+    use std::sync::LazyLock;
+
+    use iggy::prelude::HeaderKey;
+
+    use crate::prelude::consts::*;
+
+    fn key(name: &str) -> HeaderKey {
+        name.parse()
+            .unwrap_or_else(|e| panic!("invalid iggy header name {name}: {e}"))
+    }
+
+    pub static SIGNATURE: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_SIGNATURE));
+    pub static API_KEY: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_API_KEY));
+    pub static HTTP_METHOD: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_HTTP_METHOD));
+    pub static HTTP_PATH: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_HTTP_PATH));
+    pub static SERVICE_ERROR: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_SERVICE_ERROR));
+    pub static SERVICE_STATUS: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_SERVICE_STATUS));
+    pub static TS_SERVICE_RECEIVED: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_TS_SERVICE_RECEIVED));
+    pub static TS_SERVICE_SENT: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_TS_SERVICE_SENT));
+    pub static TARGET_WS_CONNECTION_ID: LazyLock<HeaderKey> = LazyLock::new(|| key(IGGY_HEADER_TARGET_WS_CONNECTION_ID));
+}
+
+/// A header's value as a string, looked up in a header map decoded once per message
+/// (`IggyMessage::user_headers_map`; `get_user_header` decodes the whole map on every call).
+pub fn header_str(headers: Option<&BTreeMap<HeaderKey, HeaderValue>>, key: &HeaderKey) -> Option<String> {
+    headers?.get(key).map(|v| v.to_string_value())
+}
 
 #[derive(Error, Debug)]
 pub enum SkwIggyError {
@@ -80,22 +108,25 @@ impl<S: IggyStates> Iggy<S> {
 }
 
 impl Iggy<Loaded> {
-    pub async fn connect(self) -> Iggy<Connected> {
-        let url = APP.config.expect_str(IGGY_URL_PATH); // only check that url exists
-        let iggy = IggyClient::from_connection_string(url).expect("Failed to create iggy client from url");
+    pub async fn connect(self) -> Result<Iggy<Connected>, SkwIggyError> {
+        let url = APP.config.expect_str(IGGY_URL_PATH); // config is fail-fast by design
+        let iggy = IggyClient::from_connection_string(url)?;
 
-        iggy.connect().await.expect("cant connect to iggy");
+        iggy.connect().await?;
 
-        Iggy::<Connected> {
+        Ok(Iggy::<Connected> {
             client: Some(Arc::new(iggy)),
             _state: PhantomData,
-        }
+        })
     }
 }
 
 impl Iggy<Connected> {
-    pub fn inner(&self) -> Option<Arc<IggyClient>> {
-        self.client.clone()
+    pub fn inner(&self) -> Arc<IggyClient> {
+        // `Connected` is only built by `connect()`, which always sets the client
+        self.client
+            .clone()
+            .expect("Iggy<Connected> always holds a client")
     }
 }
 
@@ -107,55 +138,55 @@ pub struct TopicConfig {
     pub max_topic_size: MaxTopicSize,
 }
 
-impl TryInto<TopicConfig> for &Value {
+impl TryFrom<&Value> for TopicConfig {
     type Error = AppError;
 
-    fn try_into(self) -> Result<TopicConfig, Self::Error> {
-        let obj = self
-            .as_object()
-            .ok_or_else(|| AppError::Custom("invalid topic config".into()))?;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let obj = value.as_object().ok_or("topic config must be an object")?;
 
-        // let custom_name = obj
-        //     .get("customName")
-        //     .and_then(Value::as_str)
-        //     .filter(|s| !s.is_empty())
-        //     .map(|s| s.to_string());
-
+        // required, 1..=u32::MAX: a topic with no partitions accepts no messages
         let partitions_count = obj
             .get("partitionsCount")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
+            .ok_or("partitionsCount must be a positive integer")?;
 
-        let compression_algorithm = obj
-            .get("compressionAlgorithm")
-            .and_then(Value::as_str)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let partitions_count = u32::try_from(partitions_count)
+            .ok()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| format!("partitionsCount out of range: {partitions_count}"))?;
 
-        let message_expiry = IggyExpiry::ExpireDuration(IggyDuration::new_from_secs(
-            obj.get("messageExpiry")
-                .and_then(Value::as_u64)
-                .expect("invalid duration"),
-        ));
+        // optional; present but unknown is an error, not a silent default
+        let compression_algorithm = match obj.get("compressionAlgorithm") {
+            None => CompressionAlgorithm::default(),
+            Some(v) => v
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| format!("unknown compressionAlgorithm: {v}"))?,
+        };
 
+        let expiry_secs = obj
+            .get("messageExpiry")
+            .and_then(Value::as_u64)
+            .ok_or("messageExpiry (seconds) is required")?;
+        let message_expiry = IggyExpiry::ExpireDuration(IggyDuration::new_from_secs(expiry_secs));
+
+        // optional; missing or 0 = server default
         let max_topic_size: MaxTopicSize = obj
             .get("maxTopicSize")
             .and_then(Value::as_u64)
             .unwrap_or_default()
             .into();
 
-        let mut topic_types = vec![];
-        for t in obj
+        let topic_types = obj
             .get("topicTypes")
             .and_then(Value::as_array)
-            .expect("invalid topic types")
-        {
-            let topic_type: SkwTopicType = t.try_into()?;
-            topic_types.push(topic_type);
-        }
+            .ok_or("topicTypes must be an array")?
+            .iter()
+            .map(SkwTopicType::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
 
         if topic_types.is_empty() {
-            return Err(AppError::Custom("empty topics config".into()));
+            return Err("topicTypes must not be empty".into());
         }
 
         Ok(TopicConfig {
@@ -170,8 +201,8 @@ impl TryInto<TopicConfig> for &Value {
 
 pub mod rpc {
     use super::*;
+    use crate::prelude::consts::BACK_MESSAGE_TIMEOUT;
     use crate::prelude::consts::SERVICE_TOPIC_TYPES_PATH;
-    use crate::prelude::consts::{BACK_MESSAGE_TIMEOUT, IGGY_HEADER_SERVICE_STATUS, IGGY_HEADER_TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_SENT};
     use crate::prelude::jsonrpc::SkwServiceStatus;
     use chrono::{DateTime, SecondsFormat, Utc};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -204,7 +235,9 @@ pub mod rpc {
     }
 
     /// Reply payload of an RPC handler. `status()` = Some → provisional reply (Created/Accepted):
-    /// the request is taken (e.g. a task queued), its result is read later; still the last reply.
+    /// the request is taken (e.g. a task queued). Whoever finishes the work sends the final reply
+    /// later under the same signature (see [`task_done::TaskDonePublisher`]): the ws gate delivers
+    /// both, the api gate answers HTTP with the provisional one and skips the final one.
     pub trait RpcReply: Serialize {
         fn status(&self) -> Option<SkwServiceStatus> {
             None
@@ -220,18 +253,18 @@ pub mod rpc {
     ) -> Result<IggyMessage, AppError> {
         let mut headers = BTreeMap::new();
         headers.insert(
-            HeaderKey::from_str(IGGY_HEADER_SIGNATURE)?,
+            header_keys::SIGNATURE.clone(),
             HeaderValue::from_str(signature)?,
         );
 
         if let Some(ts) = ts_service_received {
             headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_RECEIVED)?,
+                header_keys::TS_SERVICE_RECEIVED.clone(),
                 HeaderValue::from_str(&ts.to_rfc3339_opts(SecondsFormat::Nanos, true))?,
             );
         }
         headers.insert(
-            HeaderKey::from_str(IGGY_HEADER_TS_SERVICE_SENT)?,
+            header_keys::TS_SERVICE_SENT.clone(),
             HeaderValue::from_str(&Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true))?,
         );
 
@@ -239,7 +272,7 @@ pub mod rpc {
             Ok(resp) => {
                 if let Some(status) = resp.status() {
                     headers.insert(
-                        HeaderKey::from_str(IGGY_HEADER_SERVICE_STATUS)?,
+                        header_keys::SERVICE_STATUS.clone(),
                         HeaderValue::from_str(&status.to_string())?,
                     );
                 }
@@ -249,7 +282,7 @@ pub mod rpc {
                 // full error stays in the service log; only the client-facing code goes on the bus
                 error!("{}", svc_err);
                 headers.insert(
-                    HeaderKey::from_str(IGGY_HEADER_SERVICE_ERROR)?,
+                    header_keys::SERVICE_ERROR.clone(),
                     HeaderValue::from_str(&svc_err.service_error().to_string())?,
                 );
                 Bytes::copy_from_slice(b"{}")
@@ -281,8 +314,7 @@ pub mod rpc {
         let back_topic = skw_get_back_topic_name();
         let consumer = skw_get_consumer_name(&topic);
 
-        let iggy = APP.iggy.clone().connect().await;
-        let iggy_client = iggy.inner().expect("bad iggy client");
+        let iggy_client = APP.iggy.clone().connect().await?.inner();
 
         info!(
             "connecting to iggy. stream: {}; topic: {}; back topic: {}",
@@ -314,57 +346,74 @@ pub mod rpc {
             .partitioning(Partitioning::balanced())
             .build();
 
-        while let Some(message) = iggy_consumer.next().await {
-            let ts_service_received = Utc::now();
+        // up to `batch_size` messages handled at once (in this task, so `handler` needs no `Send`):
+        // a slow handler delays only its own reply, not every request behind it on this topic
+        let concurrency = usize::try_from(batch_size).unwrap_or(usize::MAX).max(1);
+        let handler = &handler;
+        let back_topic_producer = &back_topic_producer;
 
-            let received: ReceivedMessage = match message {
-                Ok(received) => received,
-                Err(error) => {
-                    error!("Error while receiving message: {error}");
-                    continue;
+        iggy_consumer
+            .for_each_concurrent(concurrency, |message| async move {
+                let ts_service_received = Utc::now();
+
+                let received: ReceivedMessage = match message {
+                    Ok(received) => received,
+                    Err(error) => {
+                        error!("Error while receiving message: {error}");
+                        return;
+                    }
+                };
+
+                // messages older than BACK_MESSAGE_TIMEOUT have already caused the
+                // originating gate to give up waiting on this signature (see
+                // gates/api's await_service_response / gates/ws's timeout
+                // watchdog) — skip the handler entirely rather than doing work
+                // (and publishing a reply) that nobody is listening for anymore.
+                let message_sent_at = UNIX_EPOCH + std::time::Duration::from_micros(received.message.header.timestamp);
+                let message_age = SystemTime::now()
+                    .duration_since(message_sent_at)
+                    .unwrap_or_default();
+
+                if message_age > BACK_MESSAGE_TIMEOUT {
+                    warn!(
+                        "skipping stale message (age: {:?} > {:?}); offset: {}, partition: {}",
+                        message_age, BACK_MESSAGE_TIMEOUT, received.current_offset, received.partition_id
+                    );
+                    return;
                 }
-            };
 
-            // messages older than BACK_MESSAGE_TIMEOUT have already caused the
-            // originating gate to give up waiting on this signature (see
-            // gates/api's await_service_response / gates/ws's timeout
-            // watchdog) — skip the handler entirely rather than doing work
-            // (and publishing a reply) that nobody is listening for anymore.
-            let message_sent_at = UNIX_EPOCH + std::time::Duration::from_micros(received.message.header.timestamp);
-            let message_age = SystemTime::now()
-                .duration_since(message_sent_at)
-                .unwrap_or_default();
+                let req: Req = match received.try_into() {
+                    Ok(req) => req,
+                    Err(e) => {
+                        error!("error: {}", e); // no signature: nobody to answer
+                        return;
+                    }
+                };
 
-            if message_age > BACK_MESSAGE_TIMEOUT {
-                warn!(
-                    "skipping stale message (age: {:?} > {:?}); offset: {}, partition: {}",
-                    message_age, BACK_MESSAGE_TIMEOUT, received.current_offset, received.partition_id
-                );
-                continue;
-            }
+                let signature = req.signature().to_string();
 
-            let req: Req = match received.try_into() {
-                Ok(req) => req,
-                Err(e) => {
-                    error!("error: {}", e); // нет сигнатуры, отвечать некому
-                    continue;
+                let meta = req.meta();
+                let rpc_payload = match req.into_rpc_method() {
+                    Ok(rpc_method) => handler(rpc_method, meta).await,
+                    Err(svc_err) => Err(svc_err),
+                };
+
+                match build_back_message(&signature, rpc_payload, Some(ts_service_received)) {
+                    Err(e) => error!(
+                        "error built back message signature: {}; error {}",
+                        signature, e
+                    ),
+                    Ok(message) => {
+                        if let Err(e) = back_topic_producer.send_one(message).await {
+                            error!(
+                                "error sending message to iggy. signature: {}; {}",
+                                signature, e
+                            );
+                        }
+                    }
                 }
-            };
-
-            let signature = req.signature().to_string();
-
-            let meta = req.meta();
-            let rpc_payload = match req.into_rpc_method() {
-                Ok(rpc_method) => handler(rpc_method, meta).await,
-                Err(svc_err) => Err(svc_err),
-            };
-
-            let message = build_back_message(&signature, rpc_payload, Some(ts_service_received))?;
-
-            if let Err(e) = back_topic_producer.send_one(message).await {
-                error!("error sending message to iggy: {}", e);
-            }
-        }
+            })
+            .await;
 
         Ok(())
     }
@@ -399,7 +448,8 @@ pub mod rpc {
         Req: RpcMessageTrait + Send + 'static,
         Req::RpcMethod: Send + EnumProperty + IntoEnumIterator,
         for<'a> &'a Req::RpcMethod: Into<&'static str>,
-        H: Fn(Req::RpcMethod, RpcRequestMeta) -> Fut + Clone + Send + 'static,
+        // Sync: one consumer runs several handler calls at once (see run_service_consumer)
+        H: Fn(Req::RpcMethod, RpcRequestMeta) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<Resp, AppError>> + Send,
         Resp: RpcReply + Send,
     {
@@ -447,12 +497,15 @@ pub mod rpc {
     }
 }
 
-/// "Task done" notifications: a RabbitMQ worker announces finished tasks on the task's own Iggy
-/// topic (`skw_get_task_done_notify_topic_name`), never on the gates' back topic — workers don't
-/// answer clients. Who reads these topics is up to their consumers.
+/// "Task done" messages from RabbitMQ workers, published to any Iggy topic of the service stream:
+/// - the gates' back topic (`skw_get_back_topic_name`) with the request's `signature`: the final
+///   reply to a request that got a provisional (Created/Accepted) reply, delivered by the gate
+///   that still waits for it (ws); used by ping-mq-service
+/// - a per-task topic (`skw_get_task_done_notify_topic_name`): a notification for other services;
+///   nothing consumes these yet
 pub mod task_done {
     use super::*;
-    use crate::{jsonrpc::SkwServiceStatus, prelude::consts::IGGY_HEADER_SERVICE_STATUS, skw_is_valid_name};
+    use crate::{jsonrpc::SkwServiceStatus, skw_is_valid_name};
 
     pub struct TaskDonePublisher {
         producer: IggyProducer,
@@ -466,12 +519,7 @@ pub mod task_done {
         pub async fn new(topic: &str) -> Result<Self, AppError> {
             skw_is_valid_name(topic).ok_or_else(|| AppError::Custom(format!("invalid topic name: {topic}")))?;
 
-            warn!("Done publisher topic: {}", topic);
-
-            let iggy = APP.iggy.clone().connect().await;
-            let iggy_client = iggy
-                .inner()
-                .ok_or_else(|| AppError::Custom("bad iggy client".into()))?;
+            let iggy_client = APP.iggy.clone().connect().await?.inner();
 
             let producer = iggy_client
                 .producer(&skw_get_stream_name(), topic)?
@@ -503,13 +551,13 @@ pub mod task_done {
             let mut headers = BTreeMap::new();
 
             headers.insert(
-                HeaderKey::from_str(IGGY_HEADER_SIGNATURE)?,
+                header_keys::SIGNATURE.clone(),
                 HeaderValue::from_str(&signature)?,
             );
 
             if let Some(status) = status {
                 headers.insert(
-                    HeaderKey::from_str(IGGY_HEADER_SERVICE_STATUS)?,
+                    header_keys::SERVICE_STATUS.clone(),
                     HeaderValue::from_str(&status.to_string())?,
                 );
             }
@@ -545,7 +593,99 @@ where
         if let Some(SkwTopicType::Signed) = signed
             && !topic_types.iter().all(|t| t == &SkwTopicType::Signed)
         {
-            panic!("Error: signed method: {name} can be used in unsigned topics");
+            panic!("Error: signed method: {name} cannot be used in unsigned topics");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prelude::consts::*;
+    use serde_json::json;
+
+    #[test]
+    fn topic_config_valid() {
+        let cfg = TopicConfig::try_from(&json!({
+            "partitionsCount": 3,
+            "messageExpiry": 31,
+            "topicTypes": ["open", "signed"]
+        }))
+        .unwrap();
+
+        assert_eq!(cfg.partitions_count, 3);
+        assert_eq!(
+            cfg.topic_types,
+            vec![SkwTopicType::Open, SkwTopicType::Signed]
+        );
+        assert_eq!(cfg.compression_algorithm, CompressionAlgorithm::default());
+        assert_eq!(cfg.max_topic_size, MaxTopicSize::ServerDefault);
+    }
+
+    #[test]
+    fn topic_config_rejects() {
+        for bad in [
+            json!({"messageExpiry": 31, "topicTypes": ["open"]}),                       // no partitionsCount
+            json!({"partitionsCount": 0, "messageExpiry": 31, "topicTypes": ["open"]}), // zero partitions
+            json!({"partitionsCount": 5_000_000_000u64, "messageExpiry": 31, "topicTypes": ["open"]}), // > u32::MAX
+            json!({"partitionsCount": "3", "messageExpiry": 31, "topicTypes": ["open"]}), // not a number
+            json!({"partitionsCount": 1, "messageExpiry": 31, "topicTypes": ["open"], "compressionAlgorithm": "gizp"}),
+            json!({"partitionsCount": 1, "topicTypes": ["open"]}), // no messageExpiry
+            json!({"partitionsCount": 1, "messageExpiry": 31}),    // no topicTypes
+            json!({"partitionsCount": 1, "messageExpiry": 31, "topicTypes": []}),
+            json!({"partitionsCount": 1, "messageExpiry": 31, "topicTypes": ["bogus"]}),
+            json!({"partitionsCount": 1, "messageExpiry": 31, "topicTypes": [1]}),
+            json!([]),
+        ] {
+            assert!(TopicConfig::try_from(&bad).is_err(), "accepted: {bad}");
+        }
+    }
+
+    #[test]
+    fn header_keys_build() {
+        use header_keys::*;
+        // forcing every LazyLock: an invalid name panics here, not on the first message
+        for (key, name) in [
+            (&*SIGNATURE, IGGY_HEADER_SIGNATURE),
+            (&*API_KEY, IGGY_HEADER_API_KEY),
+            (&*HTTP_METHOD, IGGY_HEADER_HTTP_METHOD),
+            (&*HTTP_PATH, IGGY_HEADER_HTTP_PATH),
+            (&*SERVICE_ERROR, IGGY_HEADER_SERVICE_ERROR),
+            (&*SERVICE_STATUS, IGGY_HEADER_SERVICE_STATUS),
+            (&*TS_SERVICE_RECEIVED, IGGY_HEADER_TS_SERVICE_RECEIVED),
+            (&*TS_SERVICE_SENT, IGGY_HEADER_TS_SERVICE_SENT),
+            (
+                &*TARGET_WS_CONNECTION_ID,
+                IGGY_HEADER_TARGET_WS_CONNECTION_ID,
+            ),
+        ] {
+            assert_eq!(key.as_str().unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn header_str_reads_decoded_map() {
+        let headers = BTreeMap::from([(
+            header_keys::SIGNATURE.clone(),
+            HeaderValue::from_str("sig").unwrap(),
+        )]);
+        assert_eq!(
+            header_str(Some(&headers), &header_keys::SIGNATURE).as_deref(),
+            Some("sig")
+        );
+        assert_eq!(header_str(Some(&headers), &header_keys::API_KEY), None);
+        assert_eq!(header_str(None, &header_keys::SIGNATURE), None);
+    }
+
+    #[test]
+    fn topic_type_names() {
+        for (s, t) in [
+            ("public", SkwTopicType::Public),
+            ("open", SkwTopicType::Open),
+            ("signed", SkwTopicType::Signed),
+        ] {
+            assert_eq!(s.parse::<SkwTopicType>().unwrap(), t);
+            assert_eq!(t.to_string(), s); // used in topic names: `{service}-{topic_type}-{VERSION}`
         }
     }
 }

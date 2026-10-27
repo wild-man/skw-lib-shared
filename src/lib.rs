@@ -1,4 +1,3 @@
-#[allow(unused_imports)]
 use env_logger::{Builder, Target};
 
 use base64::prelude::*;
@@ -29,7 +28,8 @@ use crate::redis::{Loaded as RedisLoaded, Redis};
 use prelude::log::info;
 
 use crate::jsonrpc::SkwServiceHttpError;
-use crate::prelude::consts::{DEFAULT_ENVIRONMENT, IGGY_STREAM_PREFIX, SERVICE_NAME_PATH, VERSION};
+use crate::prelude::consts::{BACK_MESSAGE_TIMEOUT, DEFAULT_ENVIRONMENT, IGGY_STREAM_PREFIX, SERVICE_NAME_PATH, VERSION};
+use chrono::{DateTime, TimeDelta, Utc};
 
 pub type RequestId = String;
 
@@ -132,7 +132,7 @@ pub fn skw_get_consumer_name(topic: &str) -> String {
     )
 }
 
-/// Iggy topic a finished `T` task is announced on: `task-done-notify-{T::task_name()}`.
+/// Iggy topic a finished `T` task can be announced on: `task-done-notify-{T::task_name()}-{VERSION}`.
 pub fn skw_get_task_done_notify_topic_name<T: rabbitmq::SkwMqTaskTrait>() -> String {
     format!("task-done-notify-{}-{}", T::task_name(), VERSION)
 }
@@ -163,6 +163,14 @@ pub fn skw_is_valid_name(name: &str) -> Option<String> {
     }
 
     Some(name.into())
+}
+
+/// A signed request's `Ts` too far from now (stale, possibly replayed, or future-dated):
+/// more than `BACK_MESSAGE_TIMEOUT` either way, the same window in which a gate still waits for a
+/// reply. The signature covers `Ts`, so a captured request can't be refreshed and replayed later.
+pub fn skw_is_outdated(ts: DateTime<Utc>) -> bool {
+    let max_skew = TimeDelta::from_std(BACK_MESSAGE_TIMEOUT).unwrap_or(TimeDelta::MAX);
+    (Utc::now() - ts).abs() > max_skew
 }
 
 /// Correlation id for requests that carry no client signature (public/open topics):
@@ -218,4 +226,17 @@ fn init_by_env() -> AppContext {
 fn init_logger() {
     let mut builder = Builder::from_default_env();
     builder.target(Target::Stdout).init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outdated_is_symmetric_around_now() {
+        let off = TimeDelta::from_std(BACK_MESSAGE_TIMEOUT).unwrap() + TimeDelta::seconds(1);
+        assert!(!skw_is_outdated(Utc::now()));
+        assert!(skw_is_outdated(Utc::now() - off));
+        assert!(skw_is_outdated(Utc::now() + off));
+    }
 }

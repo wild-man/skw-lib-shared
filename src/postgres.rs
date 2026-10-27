@@ -3,8 +3,7 @@ use std::marker::PhantomData;
 use sqlx::{Executor, PgPool, postgres::PgPoolOptions};
 use thiserror::Error;
 
-#[allow(unused_imports)]
-use crate::prelude::log::{error, info, warn};
+use crate::prelude::log::info;
 
 use crate::{
     APP,
