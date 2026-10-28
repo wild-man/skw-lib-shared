@@ -71,7 +71,7 @@ pub enum AppError {
 
 impl From<::iggy::prelude::IggyError> for AppError {
     fn from(e: ::iggy::prelude::IggyError) -> Self {
-        AppError::Iggy(SkwIggyError::Iggy(e.into()))
+        AppError::Iggy(SkwIggyError::Iggy(e))
     }
 }
 
@@ -95,7 +95,7 @@ impl From<&str> for AppError {
 
 impl From<String> for AppError {
     fn from(e: String) -> Self {
-        AppError::Custom(e.into())
+        AppError::Custom(e)
     }
 }
 

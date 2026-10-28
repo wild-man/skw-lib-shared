@@ -552,7 +552,7 @@ pub mod task_done {
 
             headers.insert(
                 header_keys::SIGNATURE.clone(),
-                HeaderValue::from_str(&signature)?,
+                HeaderValue::from_str(signature)?,
             );
 
             if let Some(status) = status {
