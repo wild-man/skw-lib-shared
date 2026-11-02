@@ -297,7 +297,7 @@ pub mod rpc {
 
     pub async fn run_service_consumer<Req, H, Fut, Resp>(
         handler: H,
-        pool_interval: Option<&str>,
+        pool_interval: Option<String>,
         batch_size: Option<u32>,
         topic_type: SkwTopicType,
     ) -> Result<(), AppError>
@@ -322,7 +322,7 @@ pub mod rpc {
         );
 
         let pool_interval = match pool_interval {
-            Some(i) => IggyDuration::from_str(i).map_err(|e| AppError::Custom(format!("invalid pool interval: {}; error:{}", i, e)))?,
+            Some(i) => IggyDuration::from_str(&i).map_err(|e| AppError::Custom(format!("invalid pool interval: {}; error:{}", i, e)))?,
             None => IggyDuration::from_str("1ms").map_err(|e| AppError::Custom(e.to_string()))?,
         };
 
@@ -439,7 +439,7 @@ pub mod rpc {
     /// returns an error only after every consumer has stopped.
     pub async fn run_service_consumers_all_topic_types<Req, H, Fut, Resp>(
         handler: H,
-        pool_interval: Option<&str>,
+        pool_interval: Option<String>,
         batch_size: Option<u32>,
     ) -> Result<(), AppError>
     where
@@ -457,21 +457,13 @@ pub mod rpc {
 
         validate_rpc_methods_by_topics::<Req::RpcMethod>(&topic_types);
 
-        let pool_interval = pool_interval.map(str::to_string);
-
         let mut consumers = JoinSet::new();
         for topic_type in topic_types {
             let handler = handler.clone();
             let pool_interval = pool_interval.clone();
 
             consumers.spawn(async move {
-                let result = run_service_consumer::<Req, _, _, _>(
-                    handler,
-                    pool_interval.as_deref(),
-                    batch_size,
-                    topic_type.clone(),
-                )
-                .await;
+                let result = run_service_consumer::<Req, _, _, _>(handler, pool_interval, batch_size, topic_type.clone()).await;
                 (topic_type, result)
             });
         }
