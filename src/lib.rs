@@ -4,7 +4,6 @@ use base64::prelude::*;
 use config::{Config, ConfigReady};
 use lapin::Error as LapinError;
 use postgres::{Loaded as PostgresLoaded, PostgresPools};
-use rand::RngCore;
 use reqwest::{Client as ReqwestClient, Error as ReqwestError};
 use sqlx::migrate::MigrateError;
 use std::io::Error;
@@ -178,7 +177,7 @@ pub fn skw_is_outdated(ts: DateTime<Utc>) -> bool {
 /// services handle signed and unsigned requests' ids the same way.
 pub fn skw_random_signature() -> String {
     let mut rand_signature_bytes = [0u8; 64];
-    rand::thread_rng().fill_bytes(&mut rand_signature_bytes);
+    rand::fill(&mut rand_signature_bytes);
     BASE64_STANDARD.encode(rand_signature_bytes)
 }
 

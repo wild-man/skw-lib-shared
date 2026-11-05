@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use sqlx::{Executor, PgPool, postgres::PgPoolOptions};
+use sqlx::{AssertSqlSafe, Executor, PgPool, postgres::PgPoolOptions, raw_sql};
 use thiserror::Error;
 
 use crate::prelude::log::info;
@@ -80,21 +80,22 @@ fn configure_pool(mut options: PgPoolOptions, cfg_path: &str) -> PgPoolOptions {
             Box::pin(async move {
                 if create_schema {
                     info!("Creating schema {}", service_name);
-                    conn.execute(
-                        format!(
-                            "CREATE SCHEMA IF NOT EXISTS \"{0}\"; SET search_path = '{0}';",
-                            service_name
-                        )
-                        .as_str(),
-                    )
+                    // service_name passed skw_is_valid_name at startup: no quotes, so no injection
+                    conn.execute(raw_sql(AssertSqlSafe(format!(
+                        "CREATE SCHEMA IF NOT EXISTS \"{0}\"; SET search_path = '{0}';",
+                        service_name
+                    ))))
                     .await?;
                     return Ok(()); // if we create schema then we need to set search_path to so skip next step that sets this
                 }
 
                 if set_search_path {
                     info!("Setting search path {}", service_name);
-                    conn.execute(format!("SET search_path = '{}'", service_name).as_str())
-                        .await?;
+                    conn.execute(raw_sql(AssertSqlSafe(format!(
+                        "SET search_path = '{}'",
+                        service_name
+                    ))))
+                    .await?;
                 }
 
                 Ok(())

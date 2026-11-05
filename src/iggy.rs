@@ -1,9 +1,11 @@
 use bytes::Bytes;
 use futures_util::StreamExt;
 use iggy::prelude::*;
+use iggy_common::{ConnectionString, ConnectionStringUtils, QuicConnectionStringOptions};
 use itertools::Itertools;
 use serde::Serialize;
 use std::marker::PhantomData;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::{collections::BTreeMap, fmt::Display, future::Future, str::FromStr};
 use strum::{Display, EnumProperty, EnumString, IntoEnumIterator};
@@ -110,7 +112,10 @@ impl<S: IggyStates> Iggy<S> {
 impl Iggy<Loaded> {
     pub async fn connect(self) -> Result<Iggy<Connected>, SkwIggyError> {
         let url = APP.config.expect_str(IGGY_URL_PATH); // config is fail-fast by design
-        let iggy = IggyClient::from_connection_string(url)?;
+        let iggy = match ConnectionStringUtils::parse_protocol(url)? {
+            TransportProtocol::Quic => IggyClient::new(ClientWrapper::Quic(quic_client(url)?)),
+            _ => IggyClient::from_connection_string(url)?,
+        };
 
         iggy.connect().await?;
 
@@ -119,6 +124,26 @@ impl Iggy<Loaded> {
             _state: PhantomData,
         })
     }
+}
+
+/// `QuicClient::from_connection_string` binds its socket to `127.0.0.1:0`, so it only
+/// reaches a server on loopback (a QUIC url in a container network would hang). Bind
+/// to the unspecified address of the server's family instead.
+fn quic_client(url: &str) -> Result<QuicClient, IggyError> {
+    let mut config: QuicClientConfig = ConnectionString::<QuicConnectionStringOptions>::from_str(url)?.into();
+    let server_is_ipv6 = config
+        .server_address
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .is_some_and(|addr| addr.is_ipv6());
+    config.client_address = if server_is_ipv6 {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    }
+    .to_string();
+    QuicClient::create(Arc::new(config))
 }
 
 impl Iggy<Connected> {
@@ -136,6 +161,19 @@ pub struct TopicConfig {
     pub compression_algorithm: CompressionAlgorithm,
     pub message_expiry: IggyExpiry,
     pub max_topic_size: MaxTopicSize,
+}
+
+impl TopicConfig {
+    /// Options for `create_topic`; the rest resolve from the server defaults.
+    pub fn create_options(&self) -> TopicCreateOptions {
+        TopicCreateOptions {
+            partitions_count: Some(self.partitions_count),
+            compression_algorithm: Some(self.compression_algorithm),
+            message_expiry: Some(self.message_expiry),
+            max_topic_size: Some(self.max_topic_size),
+            ..Default::default()
+        }
+    }
 }
 
 impl TryFrom<&Value> for TopicConfig {
@@ -516,12 +554,7 @@ pub mod task_done {
             let producer = iggy_client
                 .producer(&skw_get_stream_name(), topic)?
                 .partitioning(Partitioning::balanced())
-                .create_topic_if_not_exists(
-                    1,
-                    None,
-                    IggyExpiry::ServerDefault,
-                    MaxTopicSize::ServerDefault,
-                )
+                .create_topic_if_not_exists(1, IggyExpiry::ServerDefault, MaxTopicSize::ServerDefault)
                 .build();
             producer.init().await?;
 
