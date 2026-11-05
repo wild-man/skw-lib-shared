@@ -95,7 +95,7 @@ pub mod uuid {
 
 pub mod serde {
     pub use serde::{Deserialize, Serialize};
-    pub use serde_json::{Value, from_str, json};
+    pub use serde_json::{Value, from_str, json, value::RawValue};
 }
 
 pub mod axum {
